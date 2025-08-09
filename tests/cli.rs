@@ -13,6 +13,7 @@ fn runs_and_writes_report() {
 
     let output = Command::cargo_bin("betanet-lint")
         .unwrap()
+        .arg("lint")
         .arg("--binary").arg(target)
         .arg("--report").arg(&report)
         .output()

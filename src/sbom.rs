@@ -1,21 +1,18 @@
 //! Comprehensive SBOM generation (CycloneDX and SPDX formats)
 
 use std::{fs, path::PathBuf};
-use crate::binary::{BinFormat, BinaryMeta};
+use crate::binary::BinaryMeta;
 use serde_json::json;
 use thiserror::Error;
 use strum::EnumString;
 
-// Use the correct imports for cyclonedx-bom
+// CycloneDX prelude exposes commonly used types
 use cyclonedx_bom::prelude::*;
-use cyclonedx_bom::models::{
-    bom::Bom,
-    component::{Component, ComponentType, ComponentScope},
-    metadata::Metadata,
-    tool::{Tool, Tools},
-    hash::{Hash, HashType},
-    external_reference::{ExternalReference, ExternalReferenceType},
+use cyclonedx_bom::models::component::{Classification, Scope};
+use cyclonedx_bom::models::external_reference::{
+    ExternalReference, ExternalReferenceType, ExternalReferences,
 };
+use cyclonedx_bom::models::tool::{Tool, Tools};
 
 #[derive(Debug, EnumString, Clone, Copy)]
 pub enum SbomFormat {
@@ -60,44 +57,38 @@ pub fn write_sbom(
 
 fn generate_cyclonedx(meta: &BinaryMeta) -> Result<String, SbomError> {
     // Create the main component (the analyzed binary)
-    let main_component = Component {
-        component_type: ComponentType::Application,
-        name: NormalizedString::new(
-            meta.path
-                .file_name()
-                .unwrap_or_default()
-                .to_string_lossy()
-        ).map_err(|e| SbomError::Generation(e.to_string()))?,
-        version: Some(NormalizedString::new("unknown")
-            .map_err(|e| SbomError::Generation(e.to_string()))?),
-        scope: Some(ComponentScope::Required),
-        hashes: Some(vec![Hash {
-            algorithm: HashType::Sha256,
-            content: NormalizedString::new(&meta.sha256)
-                .map_err(|e| SbomError::Generation(e.to_string()))?,
-        }]),
-        external_references: Some(vec![ExternalReference {
-            reference_type: ExternalReferenceType::Other,
-            url: Uri::new(format!("file://{}", meta.path.display()))
-                .map_err(|e| SbomError::Generation(e.to_string()))?,
-            comment: Some(NormalizedString::new("Analyzed binary file")
-                .map_err(|e| SbomError::Generation(e.to_string()))?),
-            ..ExternalReference::default()
-        }]),
-        ..Component::default()
-    };
+    let name_string = meta
+        .path
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_string();
+
+    let mut main_component = Component::new(
+        Classification::Application,
+        &name_string,
+        "unknown",
+        None,
+    );
+    main_component.scope = Some(Scope::Required);
+
+    let url_string = format!("file://{}", meta.path.display());
+    let uri = Uri::new(&url_string);
+    let mut ext_ref = ExternalReference::new(ExternalReferenceType::Other, uri);
+    ext_ref.comment = Some("Analyzed binary file".to_string());
+    main_component.external_references = Some(ExternalReferences(vec![ext_ref]));
 
     // Create dependency components
-    let mut components = vec![main_component];
+    let mut components: Vec<Component> = vec![main_component];
     
     for lib_name in &meta.needed_libs {
-        let lib_component = Component {
-            component_type: ComponentType::Library,
-            name: NormalizedString::new(lib_name)
-                .map_err(|e| SbomError::Generation(e.to_string()))?,
-            scope: Some(ComponentScope::Required),
-            ..Component::default()
-        };
+        let mut lib_component = Component::new(
+            Classification::Library,
+            lib_name,
+            "",
+            None,
+        );
+        lib_component.scope = Some(Scope::Required);
         components.push(lib_component);
     }
 
@@ -105,37 +96,30 @@ fn generate_cyclonedx(meta: &BinaryMeta) -> Result<String, SbomError> {
     let crypto_keywords = ["libp2p", "kyber", "x25519", "ed25519", "quic"];
     for keyword in &crypto_keywords {
         if meta.strings.iter().any(|s| s.to_lowercase().contains(keyword)) {
-            let crypto_component = Component {
-                component_type: ComponentType::Library,
-                name: NormalizedString::new(&format!("crypto-{}", keyword))
-                    .map_err(|e| SbomError::Generation(e.to_string()))?,
-                version: Some(NormalizedString::new("detected")
-                    .map_err(|e| SbomError::Generation(e.to_string()))?),
-                scope: Some(ComponentScope::Optional),
-                ..Component::default()
-            };
+            let mut crypto_component = Component::new(
+                Classification::Library,
+                &format!("crypto-{}", keyword),
+                "detected",
+                None,
+            );
+            crypto_component.scope = Some(Scope::Optional);
             components.push(crypto_component);
         }
     }
 
     // Create the BOM
     let mut bom = Bom::default();
-    bom.serial_number = Some(
-        UrnUuid::generate().map_err(|e| SbomError::Generation(e.to_string()))?
-    );
+    bom.serial_number = Some(UrnUuid::generate());
     bom.metadata = Some(Metadata {
         tools: Some(Tools::List(vec![Tool {
-            name: Some(NormalizedString::new("betanet-lint")
-                .map_err(|e| SbomError::Generation(e.to_string()))?),
-            version: Some(NormalizedString::new(env!("CARGO_PKG_VERSION"))
-                .map_err(|e| SbomError::Generation(e.to_string()))?),
-            vendor: Some(NormalizedString::new("Betanet")
-                .map_err(|e| SbomError::Generation(e.to_string()))?),
+            name: Some(NormalizedString::new("betanet-lint")),
+            version: Some(NormalizedString::new(env!("CARGO_PKG_VERSION"))),
+            vendor: Some(NormalizedString::new("Betanet")),
             ..Tool::default()
         }])),
         ..Metadata::default()
     });
-    bom.components = Some(components);
+    bom.components = Some(Components(components));
 
     // Serialize to JSON
     let mut output = Vec::new();
