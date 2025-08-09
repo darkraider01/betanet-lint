@@ -16,7 +16,7 @@ A fast Betanet spec-compliance linter written in Rust.
 
 ### Usage
 ```bash
-./target/release/betanet-lint \
+cargo run -- \
   --binary /path/to/your/binary \
   --report ./report.json \
   [--sbom ./sbom.json]
@@ -27,7 +27,7 @@ A fast Betanet spec-compliance linter written in Rust.
 
 Example:
 ```bash
-./target/release/betanet-lint \
+cargo run -- \
   --binary ./fixture_good \
   --report ./report.json \
   --sbom ./sbom.json
