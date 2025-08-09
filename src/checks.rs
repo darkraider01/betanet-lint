@@ -389,6 +389,17 @@ mod tests {
             sha256: "abcd1234".to_string(),
             needed_libs: vec!["libc.so.6".to_string()],
             raw: vec![0x7f, 0x45, 0x4c, 0x46], // ELF magic
+            embedded_files: vec![],
+            compiler_info: None,
+            build_environment: crate::binary::BuildEnvironment {
+                build_tool: None,
+                build_version: None,
+                build_timestamp: None,
+                environment_variables: std::collections::HashMap::new(),
+            },
+            crypto_components: vec![],
+            static_libraries: vec![],
+            licenses: vec![],
         }
     }
     

@@ -25,6 +25,15 @@ strum = { version = "0.26", features = ["derive"] }
 cyclonedx-bom = "0.6"
 spdx-rs = "0.5"
 chrono = { version = "0.4", features = ["serde"] }
+md5 = "0.7"
+
+# Advanced SBOM capabilities
+tokio = { version = "1.0", features = ["full"] }
+reqwest = { version = "0.11", features = ["json"] }
+ar = "0.9"
+petgraph = "0.6"
+semver = "1.0"
+base64 = "0.22"
 
 [dev-dependencies]
 assert_cmd = "2.0"

@@ -8,13 +8,11 @@ mod sbom;
 
 use binary::BinaryMeta;
 use checks::{run_all_checks, write_report_json};
+use sbom::{write_sbom_with_options, SbomFormat, SbomOptions, LicenseScanDepth};
 
 #[derive(Parser, Debug)]
-#[command(author, version, about = "Betanet §11 compliance linter", long_about = None)]
+#[command(author, version, about = "Betanet §11 compliance linter with enhanced SBOM", long_about = None)]
 struct Cli {
-    /// Compatibility: allow a legacy `lint` positional subcommand
-    #[arg(hide = true)]
-    command_compat: Option<String>,
     /// Path to binary
     #[arg(long)]
     binary: String,
@@ -30,15 +28,35 @@ struct Cli {
     /// SBOM format: cyclonedx or spdx
     #[arg(long, default_value = "cyclonedx")]
     sbom_format: String,
+    
+    /// Include vulnerability data in SBOM
+    #[arg(long)]
+    include_vulns: bool,
+    
+    /// Generate CBOM (Cryptographic BOM)
+    #[arg(long)]
+    generate_cbom: bool,
+    
+    /// License scanning depth: basic, comprehensive, deep
+    #[arg(long, default_value = "basic")]
+    license_scan: String,
+    
+    /// Generate VEX statements
+    #[arg(long)]
+    generate_vex: bool,
+    
+    /// SLSA provenance level (1-4)
+    #[arg(long, default_value = "1")]
+    slsa_level: u8,
 }
 
 fn main() {
     env_logger::init();
     let cli = Cli::parse();
 
-    log::info!("Starting betanet-lint on '{}'", cli.binary);
+    log::info!("Starting enhanced betanet-lint on '{}'", cli.binary);
 
-    // Extract binary metadata
+    // Extract binary metadata with enhanced analysis
     let meta = match BinaryMeta::from_path(cli.binary.clone().into()) {
         Ok(m) => m,
         Err(e) => {
@@ -48,10 +66,13 @@ fn main() {
     };
 
     println!("\nAnalyzing binary: {}", cli.binary);
-    println!("  Format: {:?}", meta.format);
-    println!("  Size: {} bytes\n", meta.size_bytes);
-
-    println!("\nCompliance report for: {}\n", cli.binary);
+    println!(" Format: {:?}", meta.format);
+    println!(" Size: {} bytes", meta.size_bytes);
+    println!(" Dependencies: {} libraries", meta.needed_libs.len());
+    println!(" Crypto components: {}", meta.crypto_components.len());
+    println!(" Licenses detected: {}", meta.licenses.len());
+    println!(" Static libraries: {}", meta.static_libraries.len());
+    println!();
 
     // Run compliance checks
     let results = run_all_checks(&meta);
@@ -72,19 +93,61 @@ fn main() {
         println!("Wrote report to {}", report_path.display());
     }
 
-    // If SBOM requested, write SBOM JSON
+    // Generate enhanced SBOM if requested
     if let Some(sbom_path) = cli.sbom {
-        use sbom::{write_sbom, SbomFormat};
         let format = if cli.sbom_format.eq_ignore_ascii_case("spdx") {
             SbomFormat::Spdx
         } else {
             SbomFormat::CycloneDx
         };
         
-        match write_sbom(&PathBuf::from(&sbom_path), &meta, format) {
-            Ok(_) => println!("Wrote {} SBOM to {}", cli.sbom_format.to_uppercase(), sbom_path),
+        let license_scan_depth = match cli.license_scan.as_str() {
+            "comprehensive" => LicenseScanDepth::Comprehensive,
+            "deep" => LicenseScanDepth::Deep,
+            _ => LicenseScanDepth::Basic,
+        };
+        
+        let options = SbomOptions {
+            include_vulnerabilities: cli.include_vulns,
+            generate_cbom: cli.generate_cbom,
+            license_scan_depth,
+            generate_vex: cli.generate_vex,
+            slsa_level: cli.slsa_level.clamp(1, 4),
+        };
+        
+        match write_sbom_with_options(&PathBuf::from(&sbom_path), &meta, format, options) {
+            Ok(_) => {
+                println!("Wrote enhanced {} SBOM to {}", cli.sbom_format.to_uppercase(), sbom_path);
+                if cli.include_vulns {
+                    println!("  ✓ Included vulnerability data");
+                }
+                if cli.generate_cbom {
+                    println!("  ✓ Generated Cryptographic BOM");
+                }
+                if cli.generate_vex {
+                    println!("  ✓ Generated VEX statements");
+                }
+            }
             Err(e) => eprintln!("Failed to write SBOM: {}", e),
         }
+    }
+
+    // Summary
+    let passed = results.iter().filter(|r| r.pass).count();
+    let total = results.len();
+    println!("\n=== SUMMARY ===");
+    println!("Compliance: {}/{} checks passed", passed, total);
+    
+    if meta.crypto_components.is_empty() {
+        println!("⚠️  No cryptographic components detected");
+    } else {
+        println!("🔒 {} cryptographic components found", meta.crypto_components.len());
+    }
+    
+    if meta.licenses.is_empty() {
+        println!("⚠️  No license information detected");
+    } else {
+        println!("📄 {} license(s) detected", meta.licenses.len());
     }
 
     // Exit non-zero if any check failed
