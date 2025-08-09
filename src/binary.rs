@@ -1,6 +1,5 @@
 use sha2::{Digest, Sha256};
 use std::{fs, path::PathBuf};
-use goblin::Object;
 
 /// Minimal binary metadata
 #[derive(Debug, Clone)]
@@ -10,18 +9,13 @@ pub struct BinaryMeta {
     pub strings: Vec<String>,
     /// full-file SHA256 hex
     pub sha256: String,
-    /// file size in bytes
-    pub size_bytes: u64,
     /// raw bytes (useful for checks that need raw)
     pub raw: Vec<u8>,
-    /// format hint: "ELF", "Mach-O", "PE" or None
-    pub format: Option<String>,
 }
 
 impl BinaryMeta {
     pub fn from_path(path: PathBuf) -> Result<Self, String> {
         let raw = fs::read(&path).map_err(|e| format!("read error: {}", e))?;
-        let size_bytes = raw.len() as u64;
 
         // SHA256
         let mut hasher = Sha256::new();
@@ -31,21 +25,11 @@ impl BinaryMeta {
         // strings
         let strings = extract_ascii_strings(&raw, 4);
 
-        // format detection (best-effort)
-        let format = match Object::parse(&raw) {
-            Ok(Object::Elf(_)) => Some("ELF".to_string()),
-            Ok(Object::Mach(_)) => Some("Mach-O".to_string()),
-            Ok(Object::PE(_)) => Some("PE".to_string()),
-            _ => None,
-        };
-
         Ok(BinaryMeta {
             path,
             strings,
             sha256,
-            size_bytes,
             raw,
-            format,
         })
     }
 }

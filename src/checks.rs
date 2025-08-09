@@ -1,10 +1,11 @@
 use crate::binary::BinaryMeta;
 use goblin::Object;
+use uuid::Uuid;
 use hex;
 use regex::Regex;
 use serde::Serialize;
 use std::path::PathBuf;
-use std::{fs, str};
+use std::str;
 
 /// Serializable check result
 #[derive(Debug, Serialize, Clone)]
@@ -110,42 +111,169 @@ pub fn check_libp2p_and_crypto(meta: &BinaryMeta) -> CheckResult {
     )
 }
 
-/// CHK-04: reproducible build check — ELF .note.gnu.build-id presence and extraction (safe)
+/// CHK-04: reproducible build identifier(s)
+/// - ELF: parse .note.gnu.build-id and extract the descriptor as hex
+/// - Mach-O: read LC_UUID (UUID load command)
+/// - PE: scan CodeView (RSDS) record and extract PDB GUID
 pub fn check_repro_build(meta: &BinaryMeta) -> CheckResult {
     let buf = &meta.raw;
     match Object::parse(buf) {
         Ok(Object::Elf(elf)) => {
-            // look for section named ".note.gnu.build-id"
-            let mut found = false;
-            let mut details = String::from("No build-id section found");
-            for sh in &elf.section_headers {
-                if let Some(name) = elf.shdr_strtab.get_at(sh.sh_name) {
-                    if name == ".note.gnu.build-id" {
-                        let off = sh.sh_offset as usize;
-                        let sz = sh.sh_size as usize;
-                        if off + sz <= buf.len() {
-                            let sec = &buf[off..off + sz];
-                            details = format!(
-                                ".note.gnu.build-id (raw hex, {} bytes): {}",
-                                sec.len(),
-                                hex::encode(sec)
-                            );
-                            found = true;
-                        } else {
-                            details = "Section header out of range".to_string();
-                        }
-                        break;
-                    }
+            match extract_elf_gnu_build_id(buf, &elf) {
+                Ok(Some(build_id)) => ok(
+                    "CHK-04",
+                    true,
+                    format!("ELF GNU build-id: {}", hex::encode(build_id)),
+                ),
+                Ok(None) => ok("CHK-04", false, "ELF: GNU build-id not found".into()),
+                Err(e) => fail("CHK-04", &format!("ELF parse error: {}", e)),
+            }
+        }
+        Ok(Object::Mach(mach)) => {
+            match extract_macho_uuid(&mach) {
+                Ok(Some(uuid_bytes)) => {
+                    let uuid = Uuid::from_bytes(uuid_bytes);
+                    ok("CHK-04", true, format!("Mach-O UUID: {}", uuid.hyphenated()))
+                }
+                Ok(None) => ok("CHK-04", false, "Mach-O: UUID not found".into()),
+                Err(e) => fail("CHK-04", &format!("Mach-O parse error: {}", e)),
+            }
+        }
+        Ok(Object::PE(_pe)) => {
+            match extract_pe_pdb_guid(buf) {
+                Some(guid) => ok("CHK-04", true, format!("PE PDB GUID: {}", guid)),
+                None => ok("CHK-04", false, "PE: PDB GUID (RSDS) not found".into()),
+            }
+        }
+        Ok(_) => ok("CHK-04", false, "Unknown object format".into()),
+        Err(e) => fail("CHK-04", &format!("Parse error: {}", e)),
+    }
+}
+
+fn extract_elf_gnu_build_id(buf: &[u8], elf: &goblin::elf::Elf) -> Result<Option<Vec<u8>>, String> {
+    for sh in &elf.section_headers {
+        if let Some(name) = elf.shdr_strtab.get_at(sh.sh_name) {
+            if name == ".note.gnu.build-id" {
+                let off = sh.sh_offset as usize;
+                let sz = sh.sh_size as usize;
+                if off + sz > buf.len() {
+                    return Err(".note.gnu.build-id out of range".into());
+                }
+                let sec = &buf[off..off + sz];
+                // Parse ELF notes manually (assume 4-byte alignment)
+                if let Some(desc) = parse_gnu_build_id_note(sec) {
+                    return Ok(Some(desc));
+                }
+                return Ok(None);
+            }
+        }
+    }
+    Ok(None)
+}
+
+fn extract_macho_uuid(mach: &goblin::mach::Mach) -> Result<Option<[u8; 16]>, String> {
+    use goblin::mach::Mach::*;
+    use goblin::mach::load_command::CommandVariant;
+
+    match mach {
+        Binary(macho) => {
+            for cmd in &macho.load_commands {
+                if let CommandVariant::Uuid(u) = &cmd.command {
+                    return Ok(Some(u.uuid));
                 }
             }
-            ok("CHK-04", found, details)
+            Ok(None)
         }
-        Ok(_) => ok(
-            "CHK-04",
-            false,
-            "Non-ELF binary: build-id detection implemented only for ELF".into(),
-        ),
-        Err(e) => fail("CHK-04", &format!("Parse error: {}", e)),
+        Fat(_fat) => Ok(None),
+    }
+}
+
+fn extract_pe_pdb_guid(buf: &[u8]) -> Option<String> {
+    // Scan for CodeView signature 'RSDS' and decode GUID
+    let signature = b"RSDS";
+    let i = 0usize;
+    while let Some(pos) = twoway::find_bytes(&buf[i..], signature) {
+        let start = i + pos + 4; // skip 'RSDS'
+        if start + 16 <= buf.len() {
+            let g = &buf[start..start + 16];
+            let guid = guid_bytes_to_string(g);
+            return Some(guid);
+        }
+        break;
+    }
+    None
+}
+
+fn guid_bytes_to_string(g: &[u8]) -> String {
+    // CodeView GUID is little-endian for first 3 fields
+    use byteorder::{ByteOrder, LittleEndian};
+    if g.len() < 16 {
+        return String::new();
+    }
+    let d1 = LittleEndian::read_u32(&g[0..4]);
+    let d2 = LittleEndian::read_u16(&g[4..6]);
+    let d3 = LittleEndian::read_u16(&g[6..8]);
+    let d4 = &g[8..10];
+    let d5 = &g[10..16];
+    format!(
+        "{d1:08x}-{d2:04x}-{d3:04x}-{}-{}",
+        hex::encode(d4),
+        hex::encode(d5)
+    )
+}
+
+fn parse_gnu_build_id_note(mut data: &[u8]) -> Option<Vec<u8>> {
+    // Parse a sequence of ELF notes: namesz, descsz, type (u32 LE), followed by name (padded to 4), then desc (padded)
+    // We specifically look for name == "GNU" and type == NT_GNU_BUILD_ID (3)
+    use byteorder::{ByteOrder, LittleEndian};
+    const ALIGN: usize = 4;
+    while data.len() >= 12 {
+        let namesz = LittleEndian::read_u32(&data[0..4]) as usize;
+        let descsz = LittleEndian::read_u32(&data[4..8]) as usize;
+        let ntype = LittleEndian::read_u32(&data[8..12]);
+        data = &data[12..];
+        if data.len() < namesz {
+            return None;
+        }
+        let name = &data[..namesz];
+        let pad_namesz = ((namesz + ALIGN - 1) / ALIGN) * ALIGN;
+        if data.len() < pad_namesz {
+            return None;
+        }
+        data = &data[pad_namesz..];
+        if data.len() < descsz {
+            return None;
+        }
+        let desc = &data[..descsz];
+        let pad_descsz = ((descsz + ALIGN - 1) / ALIGN) * ALIGN;
+        if data.len() < pad_descsz {
+            return None;
+        }
+        data = &data[pad_descsz..];
+
+        if ntype == goblin::elf::note::NT_GNU_BUILD_ID && name.starts_with(b"GNU\0") {
+            return Some(desc.to_vec());
+        }
+    }
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::guid_bytes_to_string;
+
+    #[test]
+    fn test_guid_bytes_to_string_rsds_layout() {
+        // 00112233-4455-6677-8899-aabbccddeeff
+        let bytes: [u8; 16] = [
+            0x33, 0x22, 0x11, 0x00, // d1 LE
+            0x55, 0x44, // d2 LE
+            0x77, 0x66, // d3 LE
+            0x88, 0x99, // d4 (BE-as-bytes)
+            0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff, // d5
+        ];
+        let s = guid_bytes_to_string(&bytes);
+        assert_eq!(s, "00112233-4455-6677-8899-aabbccddeeff");
     }
 }
 
