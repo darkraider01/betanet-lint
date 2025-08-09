@@ -21,6 +21,8 @@ fn runs_and_writes_report() {
     // Allow exit code 0 (all pass) or 2 (some checks fail)
     let code = output.status.code().unwrap_or(-1);
     assert!([0, 2].contains(&code), "unexpected exit code: {}", code);
-    assert!(String::from_utf8_lossy(&output.stdout).contains("Compliance report for:"));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Analyzing binary:"), "stdout did not contain 'Analyzing binary:'");
+    assert!(stdout.contains("Wrote report to"), "stdout did not contain 'Wrote report to'");
     assert!(std::fs::metadata(&report).is_ok(), "report not written");
 }

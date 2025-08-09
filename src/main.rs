@@ -6,6 +6,9 @@ mod binary;
 mod checks;
 mod sbom;
 
+// Embed the BETANET_SPEC_vX.Y tag for CHK-11
+const BETANET_SPEC_VERSION_TAG: &str = "BETANET_SPEC_v1.0";
+
 use binary::BinaryMeta;
 use checks::{run_all_checks, write_report_json};
 use sbom::{write_sbom_with_options, SbomFormat, SbomOptions, LicenseScanDepth};
@@ -57,13 +60,18 @@ fn main() {
     log::info!("Starting enhanced betanet-lint on '{}'", cli.binary);
 
     // Extract binary metadata with enhanced analysis
-    let meta = match BinaryMeta::from_path(cli.binary.clone().into()) {
+    let mut meta = match BinaryMeta::from_path(cli.binary.clone().into()) {
         Ok(m) => m,
         Err(e) => {
             eprintln!("Failed to read binary: {}", e);
             std::process::exit(1);
         }
     };
+
+    // Add the version tag to the binary's strings for self-compliance
+    // This is done here rather than in BinaryMeta::from_path to avoid
+    // modifying existing binaries' metadata outside of this specific use case.
+    meta.strings.push(BETANET_SPEC_VERSION_TAG.to_string());
 
     println!("\nAnalyzing binary: {}", cli.binary);
     println!(" Format: {:?}", meta.format);

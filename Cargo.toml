@@ -38,3 +38,7 @@ base64 = "0.22"
 [dev-dependencies]
 assert_cmd = "2.0"
 tempfile = "3.10"
+
+[profile.release]
+debug = false
+strip = "symbols"

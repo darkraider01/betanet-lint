@@ -24,24 +24,30 @@ The `betanet-lint` tool now has subcommands for linting and testing.
 
 To run compliance checks on a binary:
 ```bash
-cargo run -- lint \
-  --binary /path/to/your/binary \
-  --report ./report.json \
-  [--sbom ./sbom.json] \
-  [--sbom-format cyclonedx|spdx]
+# Basic SBOM generation (backward compatible)
+cargo run -- --binary ./app --report report.json --sbom sbom.json
+
+# Comprehensive SBOM with all enhancements
+cargo run -- --binary ./app --report report.json --sbom comprehensive-sbom.json \
+  --sbom-format cyclonedx --include-vulns --generate-cbom \
+  --license-scan comprehensive --generate-vex --slsa-level 3
+
+# Generate both formats with different feature sets
+cargo run -- --binary ./app --report report.json --sbom app-cyclonedx.json \
+  --sbom-format cyclonedx --include-vulns --generate-cbom
+
+cargo run -- --binary ./app --report report.json --sbom app-spdx.json \
+  --sbom-format spdx --license-scan deep
 ```
 - `--binary` (required): path to the candidate binary to analyze
 - `--report` (required): path to write the JSON compliance report
-- `--sbom` (optional): path to write a CycloneDX v1.5 JSON SBOM
-- `--sbom-format` (optional): specifies the SBOM format, either `cyclonedx` (default) or `spdx`
-
-Example for linting:
-```bash
-cargo run -- lint \
-  --binary ./fixture_good \
-  --report ./report.json \
-  --sbom ./sbom.json
-```
+- `--sbom` (optional): path to write a CycloneDX v1.5 JSON SBOM. If omitted, no SBOM is generated.
+- `--sbom-format` (optional): specifies the SBOM format, either `cyclonedx` (default) or `spdx`.
+- `--include-vulns` (optional): includes vulnerability data in the SBOM (boolean flag).
+- `--generate-cbom` (optional): generates a Cryptographic Bill of Materials (CBOM) within the SBOM (boolean flag).
+- `--license-scan` (optional): sets the license scanning depth. Options: `basic` (default), `comprehensive`, `deep`.
+- `--generate-vex` (optional): generates VEX (Vulnerability Exploitability eXchange) statements (boolean flag).
+- `--slsa-level` (optional): specifies the SLSA (Supply-chain Levels for Software Artifacts) provenance level (integer 1-4).
 
 To run the integrated test suite:
 ```bash
