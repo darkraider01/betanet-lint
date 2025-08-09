@@ -1,0 +1,60 @@
+{
+  "binary": "./fixture_good",
+  "results": [
+    {
+      "details": "ELF e_type = 3 (ET_DYN == true)",
+      "id": "CHK-01",
+      "pass": true
+    },
+    {
+      "details": "No obvious static lib artifacts found (heuristic)",
+      "id": "CHK-02",
+      "pass": true
+    },
+    {
+      "details": "Found keywords: 5/5 => [\"libp2p\", \"kyber\", \"x25519\", \"ed25519\", \"quic\"]",
+      "id": "CHK-03",
+      "pass": true
+    },
+    {
+      "details": ".note.gnu.build-id (raw hex, 36 bytes): 040000001400000003000000474e55002c136919a06bc11cd655dbad620d97644eac375a",
+      "id": "CHK-04",
+      "pass": true
+    },
+    {
+      "details": "No debug-related strings detected",
+      "id": "CHK-05",
+      "pass": true
+    },
+    {
+      "details": "No forbidden syscall/API names detected",
+      "id": "CHK-06",
+      "pass": true
+    },
+    {
+      "details": "No disallowed crypto primitives detected",
+      "id": "CHK-07",
+      "pass": true
+    },
+    {
+      "details": "QUIC/H3 indicators present",
+      "id": "CHK-08",
+      "pass": true
+    },
+    {
+      "details": "Secure randomness usage indicators found",
+      "id": "CHK-09",
+      "pass": true
+    },
+    {
+      "details": "SBOM generation supported (will produce CycloneDX-like JSON)",
+      "id": "CHK-10",
+      "pass": true
+    },
+    {
+      "details": "Spec version tag found",
+      "id": "CHK-11",
+      "pass": true
+    }
+  ]
+}

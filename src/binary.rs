@@ -1,54 +1,77 @@
-use anyhow::Result;
-use goblin::Object;
+use sha2::{Digest, Sha256};
 use std::{fs, path::PathBuf};
+use goblin::Object;
 
-#[derive(Debug)]
+/// Minimal binary metadata
+#[derive(Debug, Clone)]
 pub struct BinaryMeta {
     pub path: PathBuf,
-    pub linked_libs: Vec<String>,
+    /// printable ASCII strings extracted from the binary (min length 4)
     pub strings: Vec<String>,
+    /// full-file SHA256 hex
+    pub sha256: String,
+    /// file size in bytes
+    pub size_bytes: u64,
+    /// raw bytes (useful for checks that need raw)
+    pub raw: Vec<u8>,
+    /// format hint: "ELF", "Mach-O", "PE" or None
+    pub format: Option<String>,
 }
 
-pub fn parse_binary(path: &PathBuf) -> Result<BinaryMeta> {
-    tracing::info!("Parsing binary: {:?}", path);
-    let buf = fs::read(path)?;
-    let mut linked_libs = Vec::new();
+impl BinaryMeta {
+    pub fn from_path(path: PathBuf) -> Result<Self, String> {
+        let raw = fs::read(&path).map_err(|e| format!("read error: {}", e))?;
+        let size_bytes = raw.len() as u64;
 
-    match Object::parse(&buf)? {
-        Object::Elf(elf) => {
-            for lib in elf.libraries {
-                linked_libs.push(lib.to_string());
-            }
-            tracing::debug!("ELF linked libraries: {:?}", linked_libs);
-        }
-        _ => {
-            tracing::warn!("Binary is not an ELF, skipping linked library extraction.");
-        }
+        // SHA256
+        let mut hasher = Sha256::new();
+        hasher.update(&raw);
+        let sha256 = format!("{:x}", hasher.finalize());
+
+        // strings
+        let strings = extract_ascii_strings(&raw, 4);
+
+        // format detection (best-effort)
+        let format = match Object::parse(&raw) {
+            Ok(Object::Elf(_)) => Some("ELF".to_string()),
+            Ok(Object::Mach(_)) => Some("Mach-O".to_string()),
+            Ok(Object::PE(_)) => Some("PE".to_string()),
+            _ => None,
+        };
+
+        Ok(BinaryMeta {
+            path,
+            strings,
+            sha256,
+            size_bytes,
+            raw,
+            format,
+        })
     }
-
-    let strings = extract_strings(&buf);
-    tracing::debug!("Extracted strings count: {}", strings.len());
-    Ok(BinaryMeta { path: path.clone(), linked_libs, strings })
 }
 
-fn extract_strings(buf: &[u8]) -> Vec<String> {
-    let mut result = Vec::new();
-    let mut current = Vec::new();
+/// Extract printable ASCII strings (like Unix `strings`).
+fn extract_ascii_strings(buf: &[u8], min_len: usize) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur = Vec::new();
 
     for &b in buf {
-        if b.is_ascii_graphic() || b == b' ' {
-            current.push(b);
-        } else if current.len() >= 4 {
-            if let Ok(s) = String::from_utf8(current.clone()) {
-                result.push(s);
-            } else {
-                tracing::warn!("Failed to convert bytes to UTF-8 string: {:?}", current);
-            }
-            current.clear();
+        if (0x20..=0x7e).contains(&b) {
+            cur.push(b);
         } else {
-            current.clear();
+            if cur.len() >= min_len {
+                if let Ok(s) = String::from_utf8(cur.clone()) {
+                    out.push(s);
+                }
+            }
+            cur.clear();
         }
     }
-    tracing::debug!("Total strings extracted: {}", result.len());
-    result
+    if cur.len() >= min_len {
+        if let Ok(s) = String::from_utf8(cur.clone()) {
+            out.push(s);
+        }
+    }
+
+    out
 }

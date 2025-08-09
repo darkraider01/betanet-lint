@@ -1,0 +1,41 @@
+name: Betanet Compliance
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  compliance:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build
+        run: cargo build --release
+
+      - name: Build fixture (example)
+        run: |
+          cat > fixture_good.c <<'C'
+          #include <stdio.h>
+          static const char *markers = "kyber x25519 ed25519 libp2p quic BETANET_SPEC_v1.0 /dev/urandom";
+          int main(void){ (void)markers; puts("fixture"); return 0; }
+          C
+          gcc -O0 fixture_good.c -o fixture_good
+
+      - name: Run compliance linter
+        run: |
+          ./target/release/betanet-lint --binary ./fixture_good --report report.json --sbom sbom.json
+        continue-on-error: false
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: betanet-lint-report
+          path: |
+            report.json
+            sbom.json

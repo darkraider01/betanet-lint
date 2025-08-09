@@ -1,0 +1,15 @@
+{
+  "bom_format": "CycloneDX",
+  "components": [
+    {
+      "name": "kyber x25519 ed25519 libp2p quic BETANET_SPEC_v1.0 /dev/urandom"
+    }
+  ],
+  "metadata": {
+    "binary_path": "./fixture_good",
+    "format": "ELF",
+    "sha256": "53b3806f5df278f9700b1eb20446d4dd2a8f2b78c8e07acd069feae389471c8a",
+    "size_bytes": 15464
+  },
+  "spec_version": 1
+}
