@@ -1,34 +1,65 @@
 use sha2::{Digest, Sha256};
 use std::{fs, path::PathBuf};
+use goblin::{elf::Elf, mach::Mach, pe::PE, Object};
 
-/// Minimal binary metadata
+/// Binary format discriminator
+#[derive(Debug, Clone)]
+pub enum BinFormat { 
+    Elf, 
+    MachO, 
+    PE, 
+    Unknown 
+}
+
+/// Enhanced binary metadata structure
 #[derive(Debug, Clone)]
 pub struct BinaryMeta {
     pub path: PathBuf,
-    /// printable ASCII strings extracted from the binary (min length 4)
+    pub format: BinFormat,
+    pub size_bytes: u64,
     pub strings: Vec<String>,
-    /// full-file SHA256 hex
     pub sha256: String,
-    /// raw bytes (useful for checks that need raw)
+    pub needed_libs: Vec<String>,
     pub raw: Vec<u8>,
 }
 
 impl BinaryMeta {
     pub fn from_path(path: PathBuf) -> Result<Self, String> {
         let raw = fs::read(&path).map_err(|e| format!("read error: {}", e))?;
+        let size_bytes = raw.len() as u64;
 
         // SHA256
         let mut hasher = Sha256::new();
         hasher.update(&raw);
         let sha256 = format!("{:x}", hasher.finalize());
 
-        // strings
+        // Extract strings
         let strings = extract_ascii_strings(&raw, 4);
+
+        // Determine format and extract dependencies
+        let (format, needed_libs) = match Object::parse(&raw).map_err(|e| e.to_string())? {
+            Object::Elf(elf) => {
+                let libs = elf.libraries.iter().map(|s| s.to_string()).collect();
+                (BinFormat::Elf, libs)
+            }
+            Object::Mach(Mach::Binary(m)) => {
+                let libs = m.libraries.iter().map(|l| l.name.to_string()).collect();
+                (BinFormat::MachO, libs)
+            }
+            Object::PE(pe) => {
+                let libs = pe.imports.iter().map(|i| i.name.clone()).collect();
+                (BinFormat::PE, libs)
+            }
+            _ => (BinFormat::Unknown, vec![]),
+        };
 
         Ok(BinaryMeta {
             path,
+            format,
+            size_bytes,
             strings,
             sha256,
+            needed_libs,
             raw,
         })
     }

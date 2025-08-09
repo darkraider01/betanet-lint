@@ -15,11 +15,8 @@ A fast Betanet spec-compliance linter written in Rust.
   The binary is at `target/release/betanet-lint`.
 
 ### Usage
-The `betanet-lint` tool now has subcommands for linting and testing.
-
-To run compliance checks on a binary:
 ```bash
-cargo run -- lint \
+./target/release/betanet-lint \
   --binary /path/to/your/binary \
   --report ./report.json \
   [--sbom ./sbom.json]
@@ -28,17 +25,12 @@ cargo run -- lint \
 - `--report` (required): path to write the JSON compliance report
 - `--sbom` (optional): path to write a CycloneDX v1.5 JSON SBOM
 
-Example for linting:
+Example:
 ```bash
-cargo run -- lint \
+./target/release/betanet-lint \
   --binary ./fixture_good \
   --report ./report.json \
   --sbom ./sbom.json
-```
-
-To run the integrated test suite:
-```bash
-cargo run -- test
 ```
 
 Exit codes:
@@ -67,8 +59,7 @@ Two workflows are included:
 You can adapt `compliance.yml` to run the linter on your own binary.
 
 ### Development
-- Run integrated tests: `cargo run -- test`
-- Run unit/integration tests: `cargo test`
+- Run tests: `cargo test`
 - Lint: `cargo clippy --all-targets -- -D warnings`
 - Example fixture (not tracked; generate locally if needed):
   ```bash

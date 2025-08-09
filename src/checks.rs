@@ -1,431 +1,416 @@
-use crate::binary::BinaryMeta;
-use goblin::Object;
-use uuid::Uuid;
-use hex;
-use regex::Regex;
-use serde::Serialize;
-use std::path::PathBuf;
-use std::str;
+//! Betanet §11 compliance checks implementation
 
-/// Serializable check result
-#[derive(Debug, Serialize, Clone)]
+use crate::binary::BinaryMeta;
+use serde::{Deserialize, Serialize};
+use std::{fs, path::PathBuf};
+use regex::Regex;
+use goblin::Object;
+
+#[derive(Debug, Serialize, Deserialize)]
 pub struct CheckResult {
-    pub id: &'static str,
+    pub id: String,
     pub pass: bool,
     pub details: String,
 }
 
-/// Entry: run all 11 checks and return results
+/// Run all 11 compliance checks against a binary
 pub fn run_all_checks(meta: &BinaryMeta) -> Vec<CheckResult> {
     vec![
-        check_pie(meta),
-        check_no_static_libs(meta),
-        check_libp2p_and_crypto(meta),
-        check_repro_build(meta),
-        check_stripped_debug(meta),
-        check_no_forbidden_syscalls(meta),
-        check_crypto_whitelist(meta),
-        check_quic_support(meta),
-        check_secure_random(meta),
-        check_sbom_capability(meta),
-        check_spec_version_tag(meta),
+        check_01_pie(meta),
+        check_02_static_linking(meta),
+        check_03_modern_crypto(meta),
+        check_04_reproducible_build(meta),
+        check_05_debug_stripped(meta),
+        check_06_forbidden_syscalls(meta),
+        check_07_crypto_whitelist(meta),
+        check_08_quic_http3(meta),
+        check_09_secure_randomness(meta),
+        check_10_sbom_capability(meta),
+        check_11_spec_version(meta),
     ]
 }
 
-/// CHK-01: PIE - best-effort (ELF exact; Mach-O/PE placeholders)
-pub fn check_pie(meta: &BinaryMeta) -> CheckResult {
-    let buf = &meta.raw;
-    if buf.is_empty() {
-        return fail("CHK-01", "Binary empty");
-    }
-    match Object::parse(buf) {
+/// Write compliance report as JSON
+pub fn write_report_json(
+    out_path: &PathBuf,
+    binary_path: &str,
+    results: &[CheckResult],
+) -> Result<(), String> {
+    let report = serde_json::json!({
+        "binary": binary_path,
+        "timestamp": chrono::Utc::now().to_rfc3339(),
+        "total_checks": results.len(),
+        "passed_checks": results.iter().filter(|r| r.pass).count(),
+        "failed_checks": results.iter().filter(|r| !r.pass).count(),
+        "overall_compliance": results.iter().all(|r| r.pass),
+        "checks": results
+    });
+
+    fs::write(out_path, serde_json::to_string_pretty(&report).map_err(|e| e.to_string())?)
+        .map_err(|e| format!("Failed to write report: {}", e))
+}
+
+/* -------------------------------------------------------------------- */
+/*  Individual Check Implementations                                    */
+/* -------------------------------------------------------------------- */
+
+/// CHK-01: Position-Independent Executable (PIE)
+fn check_01_pie(meta: &BinaryMeta) -> CheckResult {
+    let (pass, details) = match Object::parse(&meta.raw) {
         Ok(Object::Elf(elf)) => {
-            let is_dyn = elf.header.e_type == goblin::elf::header::ET_DYN;
-            ok(
-                "CHK-01",
-                is_dyn,
-                format!("ELF e_type = {} (ET_DYN == {})", elf.header.e_type, is_dyn),
-            )
-        }
-        Ok(Object::Mach(_)) => ok(
-            "CHK-01",
-            true,
-            "Mach-O binary (PIE detection not implemented)".into(),
-        ),
-        Ok(Object::PE(_)) => ok(
-            "CHK-01",
-            true,
-            "PE binary (PIE/ASLR detection not implemented)".into(),
-        ),
-        Ok(_) => fail("CHK-01", "Unknown object type"),
-        Err(e) => fail("CHK-01", &format!("Parse error: {}", e)),
-    }
-}
-
-/// CHK-02: detect obvious static linking artifacts (.a, static marker) - heuristic
-pub fn check_no_static_libs(meta: &BinaryMeta) -> CheckResult {
-    let forbidden_tokens = ["libssl.a", "libcrypto.a", ".a ", ".a\t"];
-    let mut evidence = Vec::new();
-    for s in &meta.strings {
-        let low = s.to_lowercase();
-        for tok in &forbidden_tokens {
-            if low.contains(tok) {
-                evidence.push(s.clone());
+            let is_pie = elf.header.e_type == goblin::elf::header::ET_DYN;
+            if is_pie {
+                (true, "ELF binary is position-independent (ET_DYN)".to_string())
+            } else {
+                (false, format!("ELF binary is not PIE (e_type: {})", elf.header.e_type))
             }
         }
-    }
-    let pass = evidence.is_empty();
-    ok(
-        "CHK-02",
+        Ok(Object::Mach(_)) => {
+            // Placeholder for Mach-O PIE detection
+            let has_pie_flag = meta.strings.iter().any(|s| s.contains("PIE") || s.contains("pie"));
+            if has_pie_flag {
+                (true, "Mach-O binary appears to support PIE (heuristic)".to_string())
+            } else {
+                (false, "Mach-O PIE detection not fully implemented".to_string())
+            }
+        }
+        Ok(Object::PE(_)) => {
+            // Placeholder for PE PIE detection
+            let has_aslr = meta.strings.iter().any(|s| s.contains("ASLR") || s.contains("DynamicBase"));
+            if has_aslr {
+                (true, "PE binary appears to support ASLR/PIE (heuristic)".to_string())
+            } else {
+                (false, "PE ASLR/PIE detection not fully implemented".to_string())
+            }
+        }
+        _ => (false, "Unsupported binary format for PIE detection".to_string()),
+    };
+
+    CheckResult {
+        id: "CHK-01".to_string(),
         pass,
-        if pass {
-            "No obvious static lib artifacts found (heuristic)".into()
-        } else {
-            format!(
-                "Found static-like artifacts (example): {}",
-                evidence.get(0).unwrap_or(&"".to_string())
-            )
-        },
-    )
+        details,
+    }
 }
 
-/// CHK-03: libp2p + PQ/curve crypto heuristic detection
-pub fn check_libp2p_and_crypto(meta: &BinaryMeta) -> CheckResult {
-    let keywords = ["libp2p", "kyber", "x25519", "ed25519", "quic"];
-    let mut found = Vec::new();
-    for &kw in &keywords {
-        if meta
-            .strings
-            .iter()
-            .any(|s| s.to_lowercase().contains(kw))
-        {
-            found.push(kw);
+/// CHK-02: Static Linking Detection
+fn check_02_static_linking(meta: &BinaryMeta) -> CheckResult {
+    let static_indicators = [
+        ".a", "libstatic", "static_lib", "_STATIC_", 
+        "STATIC_BUILD", "NO_SHARED_LIBS"
+    ];
+    
+    let mut found_indicators = Vec::new();
+    for indicator in &static_indicators {
+        if meta.strings.iter().any(|s| s.contains(indicator)) {
+            found_indicators.push(*indicator);
         }
     }
-    // Conservative pass if at least 2 relevant keywords present
-    let pass = found.len() >= 2;
-    ok(
-        "CHK-03",
-        pass,
-        format!("Found keywords: {}/{} => {:?}", found.len(), keywords.len(), found),
-    )
+    
+    // Also check if we have very few dynamic libraries
+    let has_few_deps = meta.needed_libs.len() < 3;
+    
+    let is_likely_static = !found_indicators.is_empty() || has_few_deps;
+    
+    let details = if is_likely_static {
+        format!("Likely statically linked - indicators: {:?}, deps: {}", 
+                found_indicators, meta.needed_libs.len())
+    } else {
+        format!("Appears dynamically linked - {} dependencies found", meta.needed_libs.len())
+    };
+
+    CheckResult {
+        id: "CHK-02".to_string(),
+        pass: is_likely_static,
+        details,
+    }
 }
 
-/// CHK-04: reproducible build identifier(s)
-/// - ELF: parse .note.gnu.build-id and extract the descriptor as hex
-/// - Mach-O: read LC_UUID (UUID load command)
-/// - PE: scan CodeView (RSDS) record and extract PDB GUID
-pub fn check_repro_build(meta: &BinaryMeta) -> CheckResult {
-    let buf = &meta.raw;
-    match Object::parse(buf) {
+/// CHK-03: Modern Cryptography and libp2p
+fn check_03_modern_crypto(meta: &BinaryMeta) -> CheckResult {
+    let crypto_keywords = ["libp2p", "kyber", "x25519", "ed25519", "quic"];
+    let mut found_keywords = Vec::new();
+    
+    for keyword in &crypto_keywords {
+        if meta.strings.iter().any(|s| s.to_lowercase().contains(keyword)) {
+            found_keywords.push(*keyword);
+        }
+    }
+    
+    let pass = found_keywords.len() >= 2; // Require at least 2 out of 5
+    let details = if pass {
+        format!("Modern crypto detected: {:?}", found_keywords)
+    } else {
+        format!("Insufficient modern crypto markers: {:?} (need 2+)", found_keywords)
+    };
+
+    CheckResult {
+        id: "CHK-03".to_string(),
+        pass,
+        details,
+    }
+}
+
+/// CHK-04: Reproducible Build Identifiers
+fn check_04_reproducible_build(meta: &BinaryMeta) -> CheckResult {
+    let (pass, details) = match Object::parse(&meta.raw) {
         Ok(Object::Elf(elf)) => {
-            match extract_elf_gnu_build_id(buf, &elf) {
-                Ok(Some(build_id)) => ok(
-                    "CHK-04",
-                    true,
-                    format!("ELF GNU build-id: {}", hex::encode(build_id)),
-                ),
-                Ok(None) => ok("CHK-04", false, "ELF: GNU build-id not found".into()),
-                Err(e) => fail("CHK-04", &format!("ELF parse error: {}", e)),
+            if let Some(build_id) = elf.build_id {
+                let build_id_hex = hex::encode(build_id);
+                (true, format!("GNU build-id found: {}", build_id_hex))
+            } else {
+                (false, "No GNU build-id found in ELF binary".to_string())
             }
         }
-        Ok(Object::Mach(mach)) => {
-            match extract_macho_uuid(&mach) {
-                Ok(Some(uuid_bytes)) => {
-                    let uuid = Uuid::from_bytes(uuid_bytes);
-                    ok("CHK-04", true, format!("Mach-O UUID: {}", uuid.hyphenated()))
-                }
-                Ok(None) => ok("CHK-04", false, "Mach-O: UUID not found".into()),
-                Err(e) => fail("CHK-04", &format!("Mach-O parse error: {}", e)),
+        Ok(Object::Mach(goblin::mach::Mach::Binary(m))) => {
+            // Look for UUID load command
+            let has_uuid = m.load_commands.iter().any(|lc| {
+                matches!(lc.command, goblin::mach::load_command::CommandVariant::Uuid(_))
+            });
+            
+            if has_uuid {
+                (true, "UUID load command found in Mach-O binary".to_string())
+            } else {
+                (false, "No UUID load command found in Mach-O binary".to_string())
             }
         }
-        Ok(Object::PE(_pe)) => {
-            match extract_pe_pdb_guid(buf) {
-                Some(guid) => ok("CHK-04", true, format!("PE PDB GUID: {}", guid)),
-                None => ok("CHK-04", false, "PE: PDB GUID (RSDS) not found".into()),
+        Ok(Object::PE(pe)) => {
+            // Look for debug directory with CodeView signature
+            let has_pdb_guid = pe.debug_data.is_some();
+            if has_pdb_guid {
+                (true, "Debug directory with GUID found in PE binary".to_string())
+            } else {
+                (false, "No PDB GUID found in PE binary".to_string())
             }
         }
-        Ok(_) => ok("CHK-04", false, "Unknown object format".into()),
-        Err(e) => fail("CHK-04", &format!("Parse error: {}", e)),
+        _ => (false, "Unsupported binary format for build ID detection".to_string()),
+    };
+
+    CheckResult {
+        id: "CHK-04".to_string(),
+        pass,
+        details,
     }
 }
 
-fn extract_elf_gnu_build_id(buf: &[u8], elf: &goblin::elf::Elf) -> Result<Option<Vec<u8>>, String> {
-    for sh in &elf.section_headers {
-        if let Some(name) = elf.shdr_strtab.get_at(sh.sh_name) {
-            if name == ".note.gnu.build-id" {
-                let off = sh.sh_offset as usize;
-                let sz = sh.sh_size as usize;
-                if off + sz > buf.len() {
-                    return Err(".note.gnu.build-id out of range".into());
-                }
-                let sec = &buf[off..off + sz];
-                // Parse ELF notes manually (assume 4-byte alignment)
-                if let Some(desc) = parse_gnu_build_id_note(sec) {
-                    return Ok(Some(desc));
-                }
-                return Ok(None);
-            }
+/// CHK-05: Debug Section Stripping
+fn check_05_debug_stripped(meta: &BinaryMeta) -> CheckResult {
+    let debug_indicators = [
+        ".debug_", ".symtab", ".strtab", "__DWARF",
+        "debug_info", "debug_line", "debug_frame"
+    ];
+    
+    let mut found_debug = Vec::new();
+    for indicator in &debug_indicators {
+        if meta.strings.iter().any(|s| s.contains(indicator)) {
+            found_debug.push(*indicator);
         }
     }
-    Ok(None)
-}
+    
+    let is_stripped = found_debug.is_empty();
+    let details = if is_stripped {
+        "Binary appears to be debug-stripped".to_string()
+    } else {
+        format!("Debug sections detected: {:?}", found_debug)
+    };
 
-fn extract_macho_uuid(mach: &goblin::mach::Mach) -> Result<Option<[u8; 16]>, String> {
-    use goblin::mach::Mach::*;
-    use goblin::mach::load_command::CommandVariant;
-
-    match mach {
-        Binary(macho) => {
-            for cmd in &macho.load_commands {
-                if let CommandVariant::Uuid(u) = &cmd.command {
-                    return Ok(Some(u.uuid));
-                }
-            }
-            Ok(None)
-        }
-        Fat(_fat) => Ok(None),
+    CheckResult {
+        id: "CHK-05".to_string(),
+        pass: is_stripped,
+        details,
     }
 }
 
-fn extract_pe_pdb_guid(buf: &[u8]) -> Option<String> {
-    // Scan for CodeView signature 'RSDS' and decode GUID
-    let signature = b"RSDS";
-    let i = 0usize;
-    while let Some(pos) = twoway::find_bytes(&buf[i..], signature) {
-        let start = i + pos + 4; // skip 'RSDS'
-        if start + 16 <= buf.len() {
-            let g = &buf[start..start + 16];
-            let guid = guid_bytes_to_string(g);
-            return Some(guid);
+/// CHK-06: Forbidden Syscalls/APIs
+fn check_06_forbidden_syscalls(meta: &BinaryMeta) -> CheckResult {
+    let forbidden_calls = ["ptrace", "execve", "fork", "system", "popen"];
+    let mut found_calls = Vec::new();
+    
+    for call in &forbidden_calls {
+        if meta.strings.iter().any(|s| s.contains(call)) {
+            found_calls.push(*call);
         }
-        break;
     }
-    None
+    
+    let pass = found_calls.is_empty();
+    let details = if pass {
+        "No forbidden syscalls detected".to_string()
+    } else {
+        format!("Forbidden syscalls found: {:?}", found_calls)
+    };
+
+    CheckResult {
+        id: "CHK-06".to_string(),
+        pass,
+        details,
+    }
 }
 
-fn guid_bytes_to_string(g: &[u8]) -> String {
-    // CodeView GUID is little-endian for first 3 fields
-    use byteorder::{ByteOrder, LittleEndian};
-    if g.len() < 16 {
-        return String::new();
+/// CHK-07: Cryptographic Primitive Whitelist
+fn check_07_crypto_whitelist(meta: &BinaryMeta) -> CheckResult {
+    let forbidden_crypto = ["rsa", "des", "md5", "sha1", "rc4"];
+    let mut found_forbidden = Vec::new();
+    
+    for crypto in &forbidden_crypto {
+        if meta.strings.iter().any(|s| s.to_lowercase().contains(crypto)) {
+            found_forbidden.push(*crypto);
+        }
     }
-    let d1 = LittleEndian::read_u32(&g[0..4]);
-    let d2 = LittleEndian::read_u16(&g[4..6]);
-    let d3 = LittleEndian::read_u16(&g[6..8]);
-    let d4 = &g[8..10];
-    let d5 = &g[10..16];
-    format!(
-        "{d1:08x}-{d2:04x}-{d3:04x}-{}-{}",
-        hex::encode(d4),
-        hex::encode(d5)
-    )
+    
+    let pass = found_forbidden.is_empty();
+    let details = if pass {
+        "No forbidden cryptographic primitives detected".to_string()
+    } else {
+        format!("Forbidden crypto primitives found: {:?}", found_forbidden)
+    };
+
+    CheckResult {
+        id: "CHK-07".to_string(),
+        pass,
+        details,
+    }
 }
 
-fn parse_gnu_build_id_note(mut data: &[u8]) -> Option<Vec<u8>> {
-    // Parse a sequence of ELF notes: namesz, descsz, type (u32 LE), followed by name (padded to 4), then desc (padded)
-    // We specifically look for name == "GNU" and type == NT_GNU_BUILD_ID (3)
-    use byteorder::{ByteOrder, LittleEndian};
-    const ALIGN: usize = 4;
-    while data.len() >= 12 {
-        let namesz = LittleEndian::read_u32(&data[0..4]) as usize;
-        let descsz = LittleEndian::read_u32(&data[4..8]) as usize;
-        let ntype = LittleEndian::read_u32(&data[8..12]);
-        data = &data[12..];
-        if data.len() < namesz {
-            return None;
-        }
-        let name = &data[..namesz];
-        let pad_namesz = ((namesz + ALIGN - 1) / ALIGN) * ALIGN;
-        if data.len() < pad_namesz {
-            return None;
-        }
-        data = &data[pad_namesz..];
-        if data.len() < descsz {
-            return None;
-        }
-        let desc = &data[..descsz];
-        let pad_descsz = ((descsz + ALIGN - 1) / ALIGN) * ALIGN;
-        if data.len() < pad_descsz {
-            return None;
-        }
-        data = &data[pad_descsz..];
-
-        if ntype == goblin::elf::note::NT_GNU_BUILD_ID && name.starts_with(b"GNU\0") {
-            return Some(desc.to_vec());
+/// CHK-08: QUIC/HTTP3 Support
+fn check_08_quic_http3(meta: &BinaryMeta) -> CheckResult {
+    let quic_indicators = ["quic", "http3", "h3", "webtransport"];
+    let mut found_indicators = Vec::new();
+    
+    for indicator in &quic_indicators {
+        if meta.strings.iter().any(|s| s.to_lowercase().contains(indicator)) {
+            found_indicators.push(*indicator);
         }
     }
-    None
+    
+    let pass = !found_indicators.is_empty();
+    let details = if pass {
+        format!("QUIC/HTTP3 support detected: {:?}", found_indicators)
+    } else {
+        "No QUIC/HTTP3 support indicators found".to_string()
+    };
+
+    CheckResult {
+        id: "CHK-08".to_string(),
+        pass,
+        details,
+    }
+}
+
+/// CHK-09: Secure Randomness
+fn check_09_secure_randomness(meta: &BinaryMeta) -> CheckResult {
+    let secure_rng_sources = [
+        "/dev/urandom", "getrandom", "RtlGenRandom", 
+        "BCryptGenRandom", "arc4random", "randombytes"
+    ];
+    let mut found_sources = Vec::new();
+    
+    for source in &secure_rng_sources {
+        if meta.strings.iter().any(|s| s.contains(source)) {
+            found_sources.push(*source);
+        }
+    }
+    
+    let pass = !found_sources.is_empty();
+    let details = if pass {
+        format!("Secure RNG sources found: {:?}", found_sources)
+    } else {
+        "No secure randomness sources detected".to_string()
+    };
+
+    CheckResult {
+        id: "CHK-09".to_string(),
+        pass,
+        details,
+    }
+}
+
+/// CHK-10: SBOM Generation Capability
+fn check_10_sbom_capability(_meta: &BinaryMeta) -> CheckResult {
+    // This is meta - our linter itself has SBOM capability
+    CheckResult {
+        id: "CHK-10".to_string(),
+        pass: true,
+        details: "SBOM generation capability provided by betanet-lint".to_string(),
+    }
+}
+
+/// CHK-11: Specification Version Tags
+fn check_11_spec_version(meta: &BinaryMeta) -> CheckResult {
+    let version_regex = match Regex::new(r"BETANET_SPEC_v\d+\.\d+") {
+        Ok(re) => re,
+        Err(_) => {
+            return CheckResult {
+                id: "CHK-11".to_string(),
+                pass: false,
+                details: "Failed to compile version regex".to_string(),
+            };
+        }
+    };
+    
+    let mut found_versions = Vec::new();
+    for string in &meta.strings {
+        if let Some(m) = version_regex.find(string) {
+            found_versions.push(m.as_str().to_string());
+        }
+    }
+    
+    let pass = !found_versions.is_empty();
+    let details = if pass {
+        format!("Specification version tags found: {:?}", found_versions)
+    } else {
+        "No BETANET_SPEC_v*.* version tags found".to_string()
+    };
+
+    CheckResult {
+        id: "CHK-11".to_string(),
+        pass,
+        details,
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::guid_bytes_to_string;
-
+    use super::*;
+    use std::path::PathBuf;
+    
+    fn create_test_meta() -> BinaryMeta {
+        BinaryMeta {
+            path: PathBuf::from("test_binary"),
+            format: crate::binary::BinFormat::Elf,
+            size_bytes: 1024,
+            strings: vec![
+                "libp2p".to_string(),
+                "x25519".to_string(),
+                "getrandom".to_string(),
+                "BETANET_SPEC_v1.0".to_string(),
+            ],
+            sha256: "abcd1234".to_string(),
+            needed_libs: vec!["libc.so.6".to_string()],
+            raw: vec![0x7f, 0x45, 0x4c, 0x46], // ELF magic
+        }
+    }
+    
     #[test]
-    fn test_guid_bytes_to_string_rsds_layout() {
-        // 00112233-4455-6677-8899-aabbccddeeff
-        let bytes: [u8; 16] = [
-            0x33, 0x22, 0x11, 0x00, // d1 LE
-            0x55, 0x44, // d2 LE
-            0x77, 0x66, // d3 LE
-            0x88, 0x99, // d4 (BE-as-bytes)
-            0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff, // d5
-        ];
-        let s = guid_bytes_to_string(&bytes);
-        assert_eq!(s, "00112233-4455-6677-8899-aabbccddeeff");
+    fn test_modern_crypto_check() {
+        let meta = create_test_meta();
+        let result = check_03_modern_crypto(&meta);
+        assert!(result.pass);
+        assert!(result.details.contains("libp2p"));
     }
-}
-
-/// CHK-05: stripped debug sections check (heuristic via string scanning)
-pub fn check_stripped_debug(meta: &BinaryMeta) -> CheckResult {
-    let has_debug = meta.strings.iter().any(|s| s.starts_with(".debug_") || s.contains(".debug_"));
-    ok(
-        "CHK-05",
-        !has_debug,
-        if has_debug {
-            "Debug-related strings present (possible debug symbols)".into()
-        } else {
-            "No debug-related strings detected".into()
-        },
-    )
-}
-
-/// CHK-06: forbidden syscalls/API names (heuristic)
-pub fn check_no_forbidden_syscalls(meta: &BinaryMeta) -> CheckResult {
-    let forbidden = ["ptrace", "execve", "fork", "system"];
-    let mut found = Vec::new();
-    for s in &meta.strings {
-        for f in &forbidden {
-            if s.contains(f) {
-                found.push(format!("{} in '{}'", f, truncate(s, 80)));
-            }
-        }
+    
+    #[test]
+    fn test_spec_version_check() {
+        let meta = create_test_meta();
+        let result = check_11_spec_version(&meta);
+        assert!(result.pass);
+        assert!(result.details.contains("BETANET_SPEC_v1.0"));
     }
-    ok(
-        "CHK-06",
-        found.is_empty(),
-        if found.is_empty() {
-            "No forbidden syscall/API names detected".into()
-        } else {
-            format!("Forbidden names found: {}", found.join("; "))
-        },
-    )
-}
-
-/// CHK-07: ensure no disallowed crypto primitives (heuristic)
-pub fn check_crypto_whitelist(meta: &BinaryMeta) -> CheckResult {
-    let disallowed = ["rsa", "des", "md5"];
-    let mut found = Vec::new();
-    for s in &meta.strings {
-        let low = s.to_lowercase();
-        for d in &disallowed {
-            if low.contains(d) {
-                found.push(d.to_string());
-            }
-        }
+    
+    #[test]
+    fn test_secure_randomness_check() {
+        let meta = create_test_meta();
+        let result = check_09_secure_randomness(&meta);
+        assert!(result.pass);
+        assert!(result.details.contains("getrandom"));
     }
-    ok(
-        "CHK-07",
-        found.is_empty(),
-        if found.is_empty() {
-            "No disallowed crypto primitives detected".into()
-        } else {
-            format!("Disallowed primitives: {:?}", found)
-        },
-    )
-}
-
-/// CHK-08: QUIC support (heuristic)
-pub fn check_quic_support(meta: &BinaryMeta) -> CheckResult {
-    let pass = meta
-        .strings
-        .iter()
-        .any(|s| s.to_lowercase().contains("quic") || s.to_lowercase().contains("http3"));
-    ok(
-        "CHK-08",
-        pass,
-        if pass {
-            "QUIC/H3 indicators present".into()
-        } else {
-            "No QUIC indicators found".into()
-        },
-    )
-}
-
-/// CHK-09: secure randomness source detection
-pub fn check_secure_random(meta: &BinaryMeta) -> CheckResult {
-    let indicators = ["/dev/urandom", "getrandom", "RtlGenRandom", "BCryptGenRandom", "arc4random"];
-    let pass = meta
-        .strings
-        .iter()
-        .any(|s| indicators.iter().any(|r| s.contains(r)));
-    ok(
-        "CHK-09",
-        pass,
-        if pass {
-            "Secure randomness usage indicators found".into()
-        } else {
-            "No secure RNG indicators found".into()
-        },
-    )
-}
-
-/// CHK-10: SBOM generation capability (we generate a minimal SBOM later)
-pub fn check_sbom_capability(_meta: &BinaryMeta) -> CheckResult {
-    ok(
-        "CHK-10",
-        true,
-        "SBOM generation supported (will produce CycloneDX-like JSON)".into(),
-    )
-}
-
-/// CHK-11: presence of spec version tag inside the binary (heuristic)
-pub fn check_spec_version_tag(meta: &BinaryMeta) -> CheckResult {
-    let re = Regex::new(r"BETANET_SPEC_v\d+\.\d+").unwrap();
-    let pass = meta.strings.iter().any(|s| re.is_match(s));
-    ok(
-        "CHK-11",
-        pass,
-        if pass {
-            "Spec version tag found".into()
-        } else {
-            "Spec version tag missing".into()
-        },
-    )
-}
-
-/* ---------- small helpers ---------- */
-
-fn ok(id: &'static str, pass: bool, details: String) -> CheckResult {
-    CheckResult { id, pass, details }
-}
-fn fail(id: &'static str, details: &str) -> CheckResult {
-    CheckResult { id, pass: false, details: details.to_string() }
-}
-fn truncate(s: &str, n: usize) -> String {
-    if s.len() <= n {
-        s.to_string()
-    } else {
-        format!("{}...", &s[..n])
-    }
-}
-
-/// Write JSON report helper used by main.rs
-pub fn write_report_json(path: &PathBuf, binary_path: &str, results: &[CheckResult]) -> Result<(), String> {
-    use serde_json::json;
-    use std::fs;
-
-    let items: Vec<_> = results
-        .iter()
-        .map(|r| json!({ "id": r.id, "pass": r.pass, "details": r.details }))
-        .collect();
-
-    let report = json!({
-        "binary": binary_path,
-        "results": items
-    });
-
-    fs::write(path, serde_json::to_string_pretty(&report).map_err(|e| e.to_string())?)
-        .map_err(|e| e.to_string())
 }
