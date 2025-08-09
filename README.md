@@ -1,91 +1,75 @@
-# Betanet-Lint
+## Betanet Lint
 
-A **Betanet spec-compliance linter** written in Rust.  
-It checks compiled binaries against the Betanet specification’s **11 must-have features** and produces a **pass/fail report** along with an optional **SBOM (Software Bill of Materials)**.
+A fast Betanet spec-compliance linter written in Rust.
 
-## Features (current)
-- CLI tool built with [Clap](https://docs.rs/clap)
-- Binary parsing via [goblin](https://docs.rs/goblin)
-- String extraction for quick evidence scanning
-- First implemented check: **CHK-03: Detect `libp2p` usage**
-- Ready to extend for all 11 checks
-- SBOM generation planned via [CycloneDX](https://cyclonedx.org/)
+- Checks a compiled binary against the Betanet spec’s 11 checks (heuristics)
+- Prints a readable table, writes a JSON report, and can optionally emit a CycloneDX SBOM
+- Exits non‑zero when any check fails (handy for CI)
 
----
+### Installation
+- Prerequisites: Rust toolchain (rustup), a C compiler only if you want to build local fixtures
+- Build:
+  ```bash
+  cargo build --release
+  ```
+  The binary is at `target/release/betanet-lint`.
 
-## Installation
-
-### Prerequisites
-- [Rust](https://rustup.rs/) toolchain (`rustc`, `cargo`) installed
-- A C compiler (`gcc` or `clang`) if you want to build test fixtures
-
-### Clone & Build
+### Usage
 ```bash
-git clone https://github.com/your-username/betanet-lint.git
-cd betanet-lint
-cargo build --release
+cargo run -- \
+  --binary /path/to/your/binary \
+  --report ./report.json \
+  [--sbom ./sbom.json]
 ```
-The compiled binary will be at:
+- `--binary` (required): path to the candidate binary to analyze
+- `--report` (required): path to write the JSON compliance report
+- `--sbom` (optional): path to write a CycloneDX v1.5 JSON SBOM
 
-```arduino
-target/release/betanet-lint
-```
-## Usage
-Basic
-```bash
-./betanet-lint --binary /path/to/target/binary
-```
 Example:
-
 ```bash
-./betanet-lint --binary ./fixture_good
+cargo run -- \
+  --binary ./fixture_good \
+  --report ./report.json \
+  --sbom ./sbom.json
 ```
-Output:
 
-```csharp
-Check CHK-03: PASS (string: kyber x25519 ed25519 libp2p quic)
-```
-## Development
-Project Structure
-```php
-src/
-  main.rs      # CLI entrypoint
-  binary.rs    # Binary parsing & string extraction
-  checks.rs    # Individual compliance checks
-Cargo.toml     # Dependencies & metadata
-```
-Adding a New Check
-Create a new function in src/checks.rs:
+Exit codes:
+- 0: all checks passed
+- 2: at least one check failed
+- 1: runtime error (e.g., failed to read the binary)
 
-```rust
-pub fn check_xyz(meta: &BinaryMeta) -> CheckResult { /* ... */ }
-```
-Append it to the check runner in main.rs.
+### What it checks (current heuristics)
+- CHK‑01: Position‑Independent Executable (PIE) where detectable
+- CHK‑02: Avoid obvious static linking artifacts
+- CHK‑03: libp2p and modern crypto indicators (e.g., kyber, x25519, ed25519, quic)
+- CHK‑04: Reproducible build identifiers (ELF GNU build‑id, Mach‑O UUID, PE PDB GUID)
+- CHK‑05: Stripped debug sections indicators
+- CHK‑06: No forbidden syscalls/API names
+- CHK‑07: No disallowed crypto primitives (e.g., rsa, des, md5)
+- CHK‑08: QUIC/HTTP3 indicators
+- CHK‑09: Secure randomness indicators
+- CHK‑10: SBOM generation capability
+- CHK‑11: Spec version tag indicator (e.g., `BETANET_SPEC_v1.0`)
 
-Rebuild and test.
+### CI
+Two workflows are included:
+- `ci.yml`: cross‑platform build, clippy, and tests on push/PR
+- `compliance.yml`: builds a tiny example fixture and runs the linter, uploading `report.json` and `sbom.json` as artifacts
 
-Test Fixtures
-To create a simple test binary that passes CHK-03:
+You can adapt `compliance.yml` to run the linter on your own binary.
 
-```bash
-cat > fixture_good.c <<'C'
-#include <stdio.h>
-static const char *markers = "kyber x25519 ed25519 libp2p quic";
-int main(void){
-    puts("fixture for betanet-lint");
-    (void)markers;
-    return 0;
-}
-C
-gcc -O0 fixture_good.c -o fixture_good
-```
-## Roadmap
-- CLI argument parsing
-- Binary parsing + string extraction
-- CHK-03 (libp2p detection)
-- All remaining 10 checks
-- SBOM generation (CycloneDX JSON)
-- GitHub Action template
+### Development
+- Run tests: `cargo test`
+- Lint: `cargo clippy --all-targets -- -D warnings`
+- Example fixture (not tracked; generate locally if needed):
+  ```bash
+  cat > fixture_good.c <<'C'
+  #include <stdio.h>
+  static const char *markers = "kyber x25519 ed25519 libp2p quic BETANET_SPEC_v1.0 /dev/urandom";
+  int main(void){ (void)markers; puts("fixture"); return 0; }
+  C
+  gcc -O0 fixture_good.c -o fixture_good
+  ```
 
-## License
-MIT License © 2025 Your Name
+### License
+MIT © 2025
