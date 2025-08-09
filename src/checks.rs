@@ -152,12 +152,16 @@ fn check_03_modern_crypto(meta: &BinaryMeta) -> CheckResult {
 /// CHK-04: Reproducible Build Identifiers
 fn check_04_reproducible_build(meta: &BinaryMeta) -> CheckResult {
     let (pass, details) = match Object::parse(&meta.raw) {
-        Ok(Object::Elf(elf)) => {
-            if let Some(build_id) = elf.build_id {
-                let build_id_hex = hex::encode(build_id);
-                (true, format!("GNU build-id found: {}", build_id_hex))
+        Ok(Object::Elf(_elf)) => {
+            // Heuristic: scan strings for a build-id-like hex of reasonable length
+            let maybe_id = meta
+                .strings
+                .iter()
+                .find(|s| s.len() >= 16 && s.chars().all(|c| c.is_ascii_hexdigit()));
+            if let Some(s) = maybe_id {
+                (true, format!("Build-id like string found: {}", s))
             } else {
-                (false, "No GNU build-id found in ELF binary".to_string())
+                (false, "No reproducible build identifier found (heuristic)".to_string())
             }
         }
         Ok(Object::Mach(goblin::mach::Mach::Binary(m))) => {

@@ -1,10 +1,15 @@
 ## Betanet Lint
 
-A fast Betanet spec-compliance linter written in Rust.
+`betanet-lint` is a robust, Rust-based command-line interface (CLI) tool designed to enforce compliance with the Betanet specification for compiled binaries. It systematically analyzes binaries to ensure they adhere to a set of predefined security, performance, and best-practice heuristics.
 
-- Checks a compiled binary against the Betanet spec’s 11 checks (heuristics)
-- Prints a readable table, writes a JSON report, and can optionally emit a CycloneDX SBOM
-- Exits non‑zero when any check fails (handy for CI)
+**Key Features:**
+
+- **Comprehensive Compliance Checks**: Implements 11 distinct checks (heuristics) against a given binary to assess its adherence to the Betanet specification. These checks cover areas such as binary format, linking, cryptography, build reproducibility, and more.
+- **Detailed Reporting**: Generates a human-readable table output to the console and a structured JSON report, providing a clear overview of check results (pass/fail) and associated details.
+- **Software Bill of Materials (SBOM) Generation**: Optionally produces a Software Bill of Materials in industry-standard formats like CycloneDX or SPDX, detailing the components and dependencies identified within the analyzed binary.
+- **CI/CD Integration**: Designed for seamless integration into Continuous Integration/Continuous Deployment pipelines, exiting with non-zero status codes on check failures to facilitate automated gating.
+
+This tool is essential for developers and auditors working within the Betanet ecosystem, ensuring that deployed binaries meet stringent compliance requirements before deployment.
 
 ### Installation
 - Prerequisites: Rust toolchain (rustup), a C compiler only if you want to build local fixtures
@@ -22,11 +27,13 @@ To run compliance checks on a binary:
 cargo run -- lint \
   --binary /path/to/your/binary \
   --report ./report.json \
-  [--sbom ./sbom.json]
+  [--sbom ./sbom.json] \
+  [--sbom-format cyclonedx|spdx]
 ```
 - `--binary` (required): path to the candidate binary to analyze
 - `--report` (required): path to write the JSON compliance report
 - `--sbom` (optional): path to write a CycloneDX v1.5 JSON SBOM
+- `--sbom-format` (optional): specifies the SBOM format, either `cyclonedx` (default) or `spdx`
 
 Example for linting:
 ```bash

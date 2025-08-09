@@ -32,11 +32,6 @@ pub enum SbomError {
     Generation(String),
 }
 
-/// Public façade - keep the same interface as before
-pub fn write_sbom_json(out_path: &PathBuf, meta: &BinaryMeta) -> Result<(), String> {
-    write_sbom(out_path, meta, SbomFormat::CycloneDx).map_err(|e| e.to_string())
-}
-
 /// Enhanced interface with format selection
 pub fn write_sbom(
     out_path: &PathBuf,
