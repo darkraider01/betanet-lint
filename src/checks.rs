@@ -1,5 +1,3 @@
-//! Betanet §11 compliance checks implementation
-
 use crate::binary::BinaryMeta;
 use serde::{Deserialize, Serialize};
 use std::{fs, path::PathBuf};

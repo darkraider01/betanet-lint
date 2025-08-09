@@ -1,6 +1,6 @@
 use sha2::{Digest, Sha256};
 use std::{fs, path::PathBuf};
-use goblin::{elf::Elf, mach::Mach, pe::PE, Object};
+use goblin::{mach::Mach, Object};
 
 /// Binary format discriminator
 #[derive(Debug, Clone)]
@@ -26,7 +26,6 @@ pub struct BinaryMeta {
 impl BinaryMeta {
     pub fn from_path(path: PathBuf) -> Result<Self, String> {
         let raw = fs::read(&path).map_err(|e| format!("read error: {}", e))?;
-        let size_bytes = raw.len() as u64;
 
         // SHA256
         let mut hasher = Sha256::new();
