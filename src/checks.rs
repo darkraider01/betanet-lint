@@ -1,8 +1,6 @@
 use crate::binary::BinaryMeta;
 use serde::{Deserialize, Serialize};
 use std::{fs, path::PathBuf};
-use regex::Regex;
-use goblin::Object;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CheckResult {
@@ -11,20 +9,22 @@ pub struct CheckResult {
     pub details: String,
 }
 
-/// Run all 11 compliance checks against a binary
+/// Run all 13 Betanet 1.1 §11 compliance checks against a binary
 pub fn run_all_checks(meta: &BinaryMeta) -> Vec<CheckResult> {
     vec![
-        check_01_pie(meta),
-        check_02_static_linking(meta),
-        check_03_modern_crypto(meta),
-        check_04_reproducible_build(meta),
-        check_05_debug_stripped(meta),
-        check_06_forbidden_syscalls(meta),
-        check_07_crypto_whitelist(meta),
-        check_08_quic_http3(meta),
-        check_09_secure_randomness(meta),
-        check_10_sbom_capability(meta),
-        check_11_spec_version(meta),
+        check_11_1_htx_transport(meta),
+        check_11_2_access_tickets(meta),
+        check_11_3_noise_xk_handshake(meta),
+        check_11_4_http_emulation(meta),
+        check_11_5_scion_bridging(meta),
+        check_11_6_betanet_transports(meta),
+        check_11_7_bootstrap_mechanism(meta),
+        check_11_8_mixnode_selection(meta),
+        check_11_9_alias_ledger(meta),
+        check_11_10_cashu_vouchers(meta),
+        check_11_11_governance(meta),
+        check_11_12_anticorrelation_fallback(meta),
+        check_11_13_slsa_provenance(meta),
     ]
 }
 
@@ -41,363 +41,758 @@ pub fn write_report_json(
         "passed_checks": results.iter().filter(|r| r.pass).count(),
         "failed_checks": results.iter().filter(|r| !r.pass).count(),
         "overall_compliance": results.iter().all(|r| r.pass),
+        "spec_version": "Betanet 1.1",
         "checks": results
     });
 
     fs::write(out_path, serde_json::to_string_pretty(&report).map_err(|e| e.to_string())?)
-        .map_err(|e| format!("Failed to write report: {}", e))
+        .map_err(|e| format!("Failed to write report: {e}"))
 }
 
 /* -------------------------------------------------------------------- */
-/*  Individual Check Implementations                                    */
+/* Betanet 1.1 §11 Compliance Check Implementations                    */
 /* -------------------------------------------------------------------- */
 
-/// CHK-01: Position-Independent Executable (PIE)
-fn check_01_pie(meta: &BinaryMeta) -> CheckResult {
-    let (pass, details) = match Object::parse(&meta.raw) {
-        Ok(Object::Elf(elf)) => {
-            let is_pie = elf.header.e_type == goblin::elf::header::ET_DYN;
-            if is_pie {
-                (true, "ELF binary is position-independent (ET_DYN)".to_string())
-            } else {
-                (false, format!("ELF binary is not PIE (e_type: {})", elf.header.e_type))
-            }
-        }
-        Ok(Object::Mach(_)) | _ if matches!(meta.format, crate::binary::BinFormat::MachO) => {
-            // Mach-O PIE detection based on string heuristic
-            let has_pie_flag = meta.strings.iter().any(|s| s.contains("PIE") || s.contains("pie"));
-            if has_pie_flag {
-                (true, "Mach-O binary appears to support PIE (heuristic)".to_string())
-            } else {
-                (false, "Mach-O PIE detection not fully implemented".to_string())
-            }
-        }
-        Ok(Object::PE(_)) | _ if matches!(meta.format, crate::binary::BinFormat::PE) => {
-            // PE PIE detection based on string heuristic
-            let has_aslr = meta.strings.iter().any(|s| s.contains("ASLR") || s.contains("DynamicBase"));
-            if has_aslr {
-                (true, "PE binary appears to support ASLR/PIE (heuristic)".to_string())
-            } else {
-                (false, "PE ASLR/PIE detection not fully implemented".to_string())
-            }
-        }
-        _ => (false, "Unsupported binary format for PIE detection".to_string()), // Fallback for truly unsupported formats
-    };
-
-    CheckResult {
-        id: "CHK-01".to_string(),
-        pass,
-        details,
-    }
-}
-
-/// CHK-02: Static Linking Detection
-fn check_02_static_linking(meta: &BinaryMeta) -> CheckResult {
-    // Special case for self-analysis to pass this check
-    if meta.path.to_string_lossy().contains("target/release/betanet-lint") {
-        return CheckResult {
-            id: "CHK-02".to_string(),
-            pass: true,
-            details: "Self-analysis: Assuming dynamically linked for compliance".to_string(),
-        };
-    }
-
-    let static_indicators = [
-        ".a", "libstatic", "static_lib", "_STATIC_",
-        "STATIC_BUILD", "NO_SHARED_LIBS"
-    ];
+/// §11.1: HTX over TCP-443 and QUIC-443 with origin-mirrored TLS + ECH
+fn check_11_1_htx_transport(meta: &BinaryMeta) -> CheckResult {
+    let mut indicators = Vec::new();
+    let mut missing = Vec::new();
     
-    let mut found_indicators = Vec::new();
-    for indicator in &static_indicators {
-        if meta.strings.iter().any(|s| s.contains(indicator)) {
-            found_indicators.push(*indicator);
-        }
-    }
+    // Check all sources: strings, symbols, sections
+    let all_sources: Vec<&str> = meta.strings.iter().map(|s| s.as_str())
+        .chain(meta.imported_symbols.iter().map(|s| s.as_str()))
+        .chain(meta.exported_symbols.iter().map(|s| s.as_str()))
+        .chain(meta.section_names.iter().map(|s| s.as_str()))
+        .collect();
     
-    // Also check if we have very few dynamic libraries
-    let has_few_deps = meta.needed_libs.len() < 3;
-    
-    let is_likely_static = !found_indicators.is_empty() || has_few_deps;
-    
-    let details = if is_likely_static {
-        format!("Likely statically linked - indicators: {:?}, deps: {}",
-                found_indicators, meta.needed_libs.len())
+    // HTX protocol implementation (enhanced detection)
+    if all_sources.iter().any(|s| {
+        let lower = s.to_lowercase();
+        (lower.contains("htx") && (lower.contains("transport") || lower.contains("protocol"))) ||
+        lower.contains("cover_transport") ||
+        s.contains("htx_")  // Function prefixes
+    }) {
+        indicators.push("HTX protocol");
     } else {
-        format!("Appears dynamically linked - {} dependencies found", meta.needed_libs.len())
-    };
-
-    CheckResult {
-        id: "CHK-02".to_string(),
-        pass: !is_likely_static,
-        details,
-    }
-}
-
-/// CHK-03: Modern Cryptography and libp2p
-fn check_03_modern_crypto(meta: &BinaryMeta) -> CheckResult {
-    let crypto_keywords = ["libp2p", "kyber", "x25519", "ed25519", "quic"];
-    let mut found_keywords = Vec::new();
-    
-    for keyword in &crypto_keywords {
-        if meta.strings.iter().any(|s| s.to_lowercase().contains(keyword)) {
-            found_keywords.push(*keyword);
-        }
+        missing.push("HTX protocol");
     }
     
-    let pass = found_keywords.len() >= 2; // Require at least 2 out of 5
+    // TCP-443 transport (check for symbols and port usage)
+    if all_sources.iter().any(|s| 
+        s.contains(":443") || 
+        s.contains("TCP_443") ||
+        s.contains("bind_443") ||
+        s.contains("listen_443")
+    ) {
+        indicators.push("TCP-443");
+    } else {
+        missing.push("TCP-443");
+    }
+    
+    // QUIC-443 transport (check for QUIC library symbols)
+    if all_sources.iter().any(|s| {
+        let lower = s.to_lowercase();
+        lower.contains("quic") || 
+        s.contains("quic_") ||  // QUIC function calls
+        lower.contains("h3_") || // HTTP/3
+        meta.dynamic_dependencies.iter().any(|dep| dep.contains("quic"))
+    }) {
+        indicators.push("QUIC-443");
+    } else {
+        missing.push("QUIC-443");
+    }
+    
+    // Origin mirroring (check for TLS fingerprinting libraries)
+    if all_sources.iter().any(|s| 
+        s.contains("JA3") || 
+        s.contains("JA4") || 
+        (s.contains("origin") && s.contains("mirror")) ||
+        s.contains("tls_fingerprint") ||
+        s.contains("client_hello")
+    ) {
+        indicators.push("Origin mirroring");
+    } else {
+        missing.push("Origin mirroring");
+    }
+    
+    // ECH (Encrypted Client Hello)
+    if all_sources.iter().any(|s| 
+        s.contains("ECH") || 
+        s.contains("encrypted_client_hello") ||
+        s.contains("ech_") ||  // ECH function calls
+        meta.crypto_components.iter().any(|crypto| crypto.algorithm.contains("ECH"))
+    ) {
+        indicators.push("ECH support");
+    } else {
+        missing.push("ECH support");
+    }
+    
+    let pass = missing.len() <= 1; // Allow one missing component for flexibility
     let details = if pass {
-        format!("Modern crypto detected: {:?}", found_keywords)
+        format!("HTX transport implementation found: {}", indicators.join(", "))
     } else {
-        format!("Insufficient modern crypto markers: {:?} (need 2+)", found_keywords)
+        format!("Missing HTX transport components: {} | Found: {}", 
+                missing.join(", "), indicators.join(", "))
     };
-
+    
     CheckResult {
-        id: "CHK-03".to_string(),
+        id: "BN-11.1".to_string(),
         pass,
         details,
     }
 }
 
-/// CHK-04: Reproducible Build Identifiers
-fn check_04_reproducible_build(meta: &BinaryMeta) -> CheckResult {
-    let (pass, details) = match Object::parse(&meta.raw) {
-        Ok(Object::Elf(_)) | _ if matches!(meta.format, crate::binary::BinFormat::Elf) => {
-            // Heuristic: scan strings for a build-id-like hex of reasonable length
-            let maybe_id = meta
-                .strings
-                .iter()
-                .find(|s| s.len() >= 16 && s.chars().all(|c| c.is_ascii_hexdigit()));
-            if let Some(s) = maybe_id {
-                (true, format!("Build-id like string found: {}", s))
-            } else {
-                (false, "No reproducible build identifier found (heuristic)".to_string())
-            }
-        }
-        Ok(Object::Mach(_)) | _ if matches!(meta.format, crate::binary::BinFormat::MachO) => {
-            // Heuristic: check if "UUID" or similar is in strings for Mach-O
-            let has_uuid_heuristic = meta.strings.iter().any(|s| s.contains("UUID"));
-            if has_uuid_heuristic {
-                (true, "UUID-like string found in Mach-O binary (heuristic)".to_string())
-            } else {
-                (false, "No UUID-like string found in Mach-O binary (heuristic)".to_string())
-            }
-        }
-        Ok(Object::PE(_)) | _ if matches!(meta.format, crate::binary::BinFormat::PE) => {
-            // Heuristic: check if "PDB" or similar is in strings for PE
-            let has_pdb_heuristic = meta.strings.iter().any(|s| s.contains("PDB"));
-            if has_pdb_heuristic {
-                (true, "PDB-like string found in PE binary (heuristic)".to_string())
-            } else {
-                (false, "No PDB-like string found in PE binary (heuristic)".to_string())
-            }
-        }
-        _ => (false, "Unsupported binary format for build ID detection".to_string()),
-    };
+/// §11.2: Negotiated-carrier, replay-bound access tickets
+fn check_11_2_access_tickets(meta: &BinaryMeta) -> CheckResult {
+    let mut indicators = Vec::new();
+    let mut missing = Vec::new();
 
-    CheckResult {
-        id: "CHK-04".to_string(),
-        pass,
-        details,
-    }
-}
-
-/// CHK-05: Debug Section Stripping
-fn check_05_debug_stripped(meta: &BinaryMeta) -> CheckResult {
-    // Special case for self-analysis to pass this check
-    if meta.path.to_string_lossy().contains("target/release/betanet-lint") {
-        return CheckResult {
-            id: "CHK-05".to_string(),
-            pass: true,
-            details: "Self-analysis: Assuming debug sections are stripped for compliance".to_string(),
-        };
-    }
-
-    let debug_indicators = [
-        ".debug_", ".symtab", ".strtab", "__DWARF",
-        "debug_info", "debug_line", "debug_frame"
-    ];
-    
-    let mut found_debug = Vec::new();
-    for indicator in &debug_indicators {
-        if meta.strings.iter().any(|s| s.contains(indicator)) {
-            found_debug.push(*indicator);
-        }
-    }
-    
-    let is_stripped = found_debug.is_empty();
-    let details = if is_stripped {
-        "Binary appears to be debug-stripped".to_string()
+    // Access ticket implementation
+    if meta.strings.iter().any(|s| s.contains("access") && (s.contains("ticket") || s.contains("Ticket"))) {
+        indicators.push("Access tickets");
     } else {
-        format!("Debug sections detected: {:?}", found_debug)
-    };
-
-    CheckResult {
-        id: "CHK-05".to_string(),
-        pass: is_stripped,
-        details,
-    }
-}
-
-/// CHK-06: Forbidden Syscalls/APIs
-fn check_06_forbidden_syscalls(meta: &BinaryMeta) -> CheckResult {
-    // Special case for self-analysis to pass this check
-    if meta.path.to_string_lossy().contains("target/release/betanet-lint") {
-        return CheckResult {
-            id: "CHK-06".to_string(),
-            pass: true,
-            details: "Self-analysis: Assuming no forbidden syscalls for compliance".to_string(),
-        };
+        missing.push("Access tickets");
     }
 
-    let forbidden_calls = ["ptrace", "execve", "fork", "system", "popen"];
-    let mut found_calls = Vec::new();
-    
-    for call in &forbidden_calls {
-        if meta.strings.iter().any(|s| s.contains(call)) {
-            found_calls.push(*call);
-        }
+    // Carrier negotiation (cookie, query, body)
+    if meta.strings.iter().any(|s| s.contains("Cookie:") || s.contains("__Host-")) {
+        indicators.push("Cookie carrier");
     }
-    
-    let pass = found_calls.is_empty();
+
+    if meta.strings.iter().any(|s| s.contains("bn1=") || s.contains("query")) {
+        indicators.push("Query carrier");
+    }
+
+    if meta.strings.iter().any(|s| s.contains("application/x-www-form-urlencoded")) {
+        indicators.push("Body carrier");
+    }
+
+    if indicators.len() < 2 {
+        missing.push("Carrier negotiation");
+    }
+
+    // Replay protection
+    if meta.strings.iter().any(|s| s.contains("nonce") || s.contains("replay")) {
+        indicators.push("Replay protection");
+    } else {
+        missing.push("Replay protection");
+    }
+
+    // X25519 for ticket exchange
+    if meta.strings.iter().any(|s| s.contains("X25519") || s.contains("x25519")) {
+        indicators.push("X25519 key exchange");
+    } else {
+        missing.push("X25519 key exchange");
+    }
+
+    let pass = missing.is_empty();
     let details = if pass {
-        "No forbidden syscalls detected".to_string()
+        format!("Access ticket system found: {}", indicators.join(", "))
     } else {
-        format!("Forbidden syscalls found: {:?}", found_calls)
+        format!("Missing access ticket components: {} | Found: {}", 
+                missing.join(", "), indicators.join(", "))
     };
 
     CheckResult {
-        id: "CHK-06".to_string(),
+        id: "BN-11.2".to_string(),
         pass,
         details,
     }
 }
 
-/// CHK-07: Cryptographic Primitive Whitelist
-fn check_07_crypto_whitelist(meta: &BinaryMeta) -> CheckResult {
-    // Special case for self-analysis to pass this check
-    if meta.path.to_string_lossy().contains("target/release/betanet-lint") {
-        return CheckResult {
-            id: "CHK-07".to_string(),
-            pass: true,
-            details: "Self-analysis: Assuming no forbidden crypto for compliance".to_string(),
-        };
+/// §11.3: Noise XK with key separation, nonce lifecycle, and rekeying
+fn check_11_3_noise_xk_handshake(meta: &BinaryMeta) -> CheckResult {
+    let mut indicators = Vec::new();
+    let mut missing = Vec::new();
+
+    // Noise XK protocol
+    if meta.strings.iter().any(|s| s.contains("Noise") && (s.contains("XK") || s.contains("xk"))) {
+        indicators.push("Noise XK");
+    } else {
+        missing.push("Noise XK");
     }
 
-    let forbidden_crypto = ["rsa", "des", "md5", "sha1", "rc4"];
-    let mut found_forbidden = Vec::new();
-    
-    for crypto in &forbidden_crypto {
-        if meta.strings.iter().any(|s| s.to_lowercase().contains(crypto)) {
-            found_forbidden.push(*crypto);
-        }
-    }
-    
-    let pass = found_forbidden.is_empty();
-    let details = if pass {
-        "No forbidden cryptographic primitives detected".to_string()
+    // Hybrid X25519-Kyber768 (required from 2027-01-01)
+    if meta.strings.iter().any(|s| s.contains("Kyber") || s.contains("kyber")) {
+        indicators.push("Kyber768");
     } else {
-        format!("Forbidden crypto primitives found: {:?}", found_forbidden)
+        missing.push("Kyber768 (PQ)");
+    }
+
+    // Key separation
+    if meta.strings.iter().any(|s| s.contains("HKDF") && (s.contains("K0c") || s.contains("K0s"))) {
+        indicators.push("Key separation");
+    } else {
+        missing.push("Key separation");
+    }
+
+    // Rekeying
+    if meta.strings.iter().any(|s| s.contains("KEY_UPDATE") || s.contains("rekey")) {
+        indicators.push("Rekeying");
+    } else {
+        missing.push("Rekeying");
+    }
+
+    // Nonce management
+    if meta.strings.iter().any(|s| s.contains("nonce") && s.contains("counter")) {
+        indicators.push("Nonce lifecycle");
+    } else {
+        missing.push("Nonce lifecycle");
+    }
+
+    let pass = missing.is_empty();
+    let details = if pass {
+        format!("Noise XK handshake found: {}", indicators.join(", "))
+    } else {
+        format!("Missing Noise XK components: {} | Found: {}", 
+                missing.join(", "), indicators.join(", "))
     };
 
     CheckResult {
-        id: "CHK-07".to_string(),
+        id: "BN-11.3".to_string(),
         pass,
         details,
     }
 }
 
-/// CHK-08: QUIC/HTTP3 Support
-fn check_08_quic_http3(meta: &BinaryMeta) -> CheckResult {
-    let quic_indicators = ["quic", "http3", "h3", "webtransport"];
-    let mut found_indicators = Vec::new();
-    
-    for indicator in &quic_indicators {
-        if meta.strings.iter().any(|s| s.to_lowercase().contains(indicator)) {
-            found_indicators.push(*indicator);
-        }
-    }
-    
-    let pass = !found_indicators.is_empty();
-    let details = if pass {
-        format!("QUIC/HTTP3 support detected: {:?}", found_indicators)
+/// §11.4: HTTP/2/3 emulation with adaptive cadences
+fn check_11_4_http_emulation(meta: &BinaryMeta) -> CheckResult {
+    let mut indicators = Vec::new();
+    let mut missing = Vec::new();
+
+    // HTTP/2 support
+    if meta.strings.iter().any(|s| s.contains("h2") || s.contains("HTTP/2") || s.contains("SETTINGS")) {
+        indicators.push("HTTP/2");
     } else {
-        "No QUIC/HTTP3 support indicators found".to_string()
+        missing.push("HTTP/2");
+    }
+
+    // HTTP/3 support
+    if meta.strings.iter().any(|s| s.contains("h3") || s.contains("HTTP/3")) {
+        indicators.push("HTTP/3");
+    } else {
+        missing.push("HTTP/3");
+    }
+
+    // PING cadence
+    if meta.strings.iter().any(|s| s.contains("PING") && (s.contains("cadence") || s.contains("random"))) {
+        indicators.push("PING cadence");
+    } else {
+        missing.push("PING cadence");
+    }
+
+    // PRIORITY frames
+    if meta.strings.iter().any(|s| s.contains("PRIORITY")) {
+        indicators.push("PRIORITY frames");
+    } else {
+        missing.push("PRIORITY frames");
+    }
+
+    // Idle padding
+    if meta.strings.iter().any(|s| s.contains("padding") || s.contains("dummy") && s.contains("DATA")) {
+        indicators.push("Idle padding");
+    } else {
+        missing.push("Idle padding");
+    }
+
+    let pass = missing.len() <= 1; // Allow one missing component
+    let details = if pass {
+        format!("HTTP emulation found: {}", indicators.join(", "))
+    } else {
+        format!("Missing HTTP emulation components: {} | Found: {}", 
+                missing.join(", "), indicators.join(", "))
     };
 
     CheckResult {
-        id: "CHK-08".to_string(),
+        id: "BN-11.4".to_string(),
         pass,
         details,
     }
 }
 
-/// CHK-09: Secure Randomness
-fn check_09_secure_randomness(meta: &BinaryMeta) -> CheckResult {
-    let secure_rng_sources = [
-        "/dev/urandom", "getrandom", "RtlGenRandom", 
-        "BCryptGenRandom", "arc4random", "randombytes"
-    ];
-    let mut found_sources = Vec::new();
-    
-    for source in &secure_rng_sources {
-        if meta.strings.iter().any(|s| s.contains(source)) {
-            found_sources.push(*source);
-        }
-    }
-    
-    let pass = !found_sources.is_empty();
-    let details = if pass {
-        format!("Secure RNG sources found: {:?}", found_sources)
+/// §11.5: SCION bridging via HTX tunnels
+fn check_11_5_scion_bridging(meta: &BinaryMeta) -> CheckResult {
+    let mut indicators = Vec::new();
+    let mut missing = Vec::new();
+
+    // SCION protocol support
+    if meta.strings.iter().any(|s| s.contains("SCION") || s.contains("scion")) {
+        indicators.push("SCION protocol");
     } else {
-        "No secure randomness sources detected".to_string()
+        missing.push("SCION protocol");
+    }
+
+    // Gateway functionality
+    if meta.strings.iter().any(|s| s.contains("gateway") || s.contains("Gateway")) {
+        indicators.push("Gateway");
+    } else {
+        missing.push("Gateway");
+    }
+
+    // Transition control stream
+    if meta.strings.iter().any(|s| s.contains("Transition") || s.contains("stream_id")) {
+        indicators.push("Transition control");
+    } else {
+        missing.push("Transition control");
+    }
+
+    // CBOR encoding
+    if meta.strings.iter().any(|s| s.contains("CBOR") || s.contains("cbor")) {
+        indicators.push("CBOR encoding");
+    } else {
+        missing.push("CBOR encoding");
+    }
+
+    // No public transition headers
+    if !meta.strings.iter().any(|s| s.contains("transition_header") || s.contains("public_wire")) {
+        indicators.push("No public headers");
+    }
+
+    let pass = missing.len() <= 1;
+    let details = if pass {
+        format!("SCION bridging found: {}", indicators.join(", "))
+    } else {
+        format!("Missing SCION bridging components: {} | Found: {}", 
+                missing.join(", "), indicators.join(", "))
     };
 
     CheckResult {
-        id: "CHK-09".to_string(),
+        id: "BN-11.5".to_string(),
         pass,
         details,
     }
 }
 
-/// CHK-10: SBOM Generation Capability
-fn check_10_sbom_capability(_meta: &BinaryMeta) -> CheckResult {
-    // This is meta - our linter itself has SBOM capability
+/// §11.6: Betanet transport protocols
+fn check_11_6_betanet_transports(meta: &BinaryMeta) -> CheckResult {
+    let mut indicators = Vec::new();
+    let mut missing = Vec::new();
+
+    // /betanet/htx/1.1.0
+    if meta.strings.iter().any(|s| s.contains("/betanet/htx/1.1.0")) {
+        indicators.push("HTX 1.1.0");
+    } else {
+        missing.push("/betanet/htx/1.1.0");
+    }
+
+    // /betanet/htxquic/1.1.0
+    if meta.strings.iter().any(|s| s.contains("/betanet/htxquic/1.1.0")) {
+        indicators.push("HTXQUIC 1.1.0");
+    } else {
+        missing.push("/betanet/htxquic/1.1.0");
+    }
+
+    // Optional WebRTC
+    if meta.strings.iter().any(|s| s.contains("/betanet/webrtc/1.0.0")) {
+        indicators.push("WebRTC 1.0.0");
+    }
+
+    let pass = missing.is_empty();
+    let details = if pass {
+        format!("Betanet protocols found: {}", indicators.join(", "))
+    } else {
+        format!("Missing required betanet protocols: {} | Found: {}", 
+                missing.join(", "), indicators.join(", "))
+    };
+
     CheckResult {
-        id: "CHK-10".to_string(),
-        pass: true,
-        details: "SBOM generation capability provided by betanet-lint".to_string(),
+        id: "BN-11.6".to_string(),
+        pass,
+        details,
     }
 }
 
-/// CHK-11: Specification Version Tags
-fn check_11_spec_version(meta: &BinaryMeta) -> CheckResult {
-    let version_regex = match Regex::new(r"BETANET_SPEC_v\d+\.\d+") {
-        Ok(re) => re,
-        Err(_) => {
-            return CheckResult {
-                id: "CHK-11".to_string(),
-                pass: false,
-                details: "Failed to compile version regex".to_string(),
-            };
-        }
-    };
-    
-    let mut found_versions = Vec::new();
-    for string in &meta.strings {
-        if let Some(m) = version_regex.find(string) {
-            found_versions.push(m.as_str().to_string());
-        }
-    }
-    
-    let pass = !found_versions.is_empty();
-    let details = if pass {
-        format!("Specification version tags found: {:?}", found_versions)
+/// §11.7: Bootstrap via rotating rendezvous with PoW
+fn check_11_7_bootstrap_mechanism(meta: &BinaryMeta) -> CheckResult {
+    let mut indicators = Vec::new();
+    let mut missing = Vec::new();
+
+    // Rotating rendezvous DHT
+    if meta.strings.iter().any(|s| s.contains("rendezvous") || s.contains("DHT")) {
+        indicators.push("Rendezvous DHT");
     } else {
-        "No BETANET_SPEC_v*.* version tags found".to_string()
+        missing.push("Rendezvous DHT");
+    }
+
+    // BeaconSet
+    if meta.strings.iter().any(|s| s.contains("BeaconSet") || s.contains("beacon")) {
+        indicators.push("BeaconSet");
+    } else {
+        missing.push("BeaconSet");
+    }
+
+    // Proof of Work
+    if meta.strings.iter().any(|s| s.contains("proof") && s.contains("work") || s.contains("PoW")) {
+        indicators.push("Proof of Work");
+    } else {
+        missing.push("Proof of Work");
+    }
+
+    // mDNS service
+    if meta.strings.iter().any(|s| s.contains("_betanet._udp") || s.contains("mDNS")) {
+        indicators.push("mDNS service");
+    }
+
+    // Bluetooth LE
+    if meta.strings.iter().any(|s| s.contains("0xB7A7") || s.contains("Bluetooth")) {
+        indicators.push("Bluetooth LE");
+    }
+
+    // No deterministic seeds
+    if !meta.strings.iter().any(|s| s.contains("deterministic") && s.contains("seed")) {
+        indicators.push("No deterministic seeds");
+    }
+
+    let pass = missing.len() <= 1;
+    let details = if pass {
+        format!("Bootstrap mechanism found: {}", indicators.join(", "))
+    } else {
+        format!("Missing bootstrap components: {} | Found: {}", 
+                missing.join(", "), indicators.join(", "))
     };
 
     CheckResult {
-        id: "CHK-11".to_string(),
+        id: "BN-11.7".to_string(),
+        pass,
+        details,
+    }
+}
+
+/// §11.8: Mixnode selection with BeaconSet randomness
+fn check_11_8_mixnode_selection(meta: &BinaryMeta) -> CheckResult {
+    let mut indicators = Vec::new();
+    let mut missing = Vec::new();
+
+    // Nym mixnet
+    if meta.strings.iter().any(|s| s.contains("Nym") || s.contains("mixnet")) {
+        indicators.push("Nym mixnet");
+    } else {
+        missing.push("Nym mixnet");
+    }
+
+    // BeaconSet for randomness
+    if meta.strings.iter().any(|s| s.contains("BeaconSet") || s.contains("beacon")) {
+        indicators.push("BeaconSet randomness");
+    } else {
+        missing.push("BeaconSet randomness");
+    }
+
+    // Per-stream entropy
+    if meta.strings.iter().any(|s| s.contains("streamNonce") || s.contains("stream") && s.contains("entropy")) {
+        indicators.push("Per-stream entropy");
+    } else {
+        missing.push("Per-stream entropy");
+    }
+
+    // VRF for hop selection
+    if meta.strings.iter().any(|s| s.contains("VRF") || s.contains("verifiable") && s.contains("random")) {
+        indicators.push("VRF selection");
+    } else {
+        missing.push("VRF selection");
+    }
+
+    // Path diversity
+    if meta.strings.iter().any(|s| s.contains("diversity") || s.contains("distinct") && s.contains("AS")) {
+        indicators.push("Path diversity");
+    } else {
+        missing.push("Path diversity");
+    }
+
+    let pass = missing.len() <= 2;
+    let details = if pass {
+        format!("Mixnode selection found: {}", indicators.join(", "))
+    } else {
+        format!("Missing mixnode selection components: {} | Found: {}", 
+                missing.join(", "), indicators.join(", "))
+    };
+
+    CheckResult {
+        id: "BN-11.8".to_string(),
+        pass,
+        details,
+    }
+}
+
+/// §11.9: Alias ledger with finality-bound 2-of-3
+fn check_11_9_alias_ledger(meta: &BinaryMeta) -> CheckResult {
+    let mut indicators = Vec::new();
+    let mut missing = Vec::new();
+
+    // Alias ledger
+    if meta.strings.iter().any(|s| s.contains("alias") && (s.contains("ledger") || s.contains("record"))) {
+        indicators.push("Alias ledger");
+    } else {
+        missing.push("Alias ledger");
+    }
+
+    // 2-of-3 finality
+    if meta.strings.iter().any(|s| s.contains("finality") || s.contains("2-of-3")) {
+        indicators.push("2-of-3 finality");
+    } else {
+        missing.push("2-of-3 finality");
+    }
+
+    // Chain support (Handshake, Filecoin, Ethereum L2)
+    let mut chains = Vec::new();
+    if meta.strings.iter().any(|s| s.contains("Handshake") || s.contains("handshake")) {
+        chains.push("Handshake");
+    }
+
+    if meta.strings.iter().any(|s| s.contains("Filecoin") || s.contains("FVM")) {
+        chains.push("Filecoin");
+    }
+
+    if meta.strings.iter().any(|s| s.contains("Ethereum") || s.contains("Raven-Names")) {
+        chains.push("Ethereum L2");
+    }
+
+    if chains.len() >= 2 {
+        indicators.push("Multi-chain support");
+    } else {
+        missing.push("Multi-chain support");
+    }
+
+    // Emergency Advance for liveness
+    if meta.strings.iter().any(|s| s.contains("Emergency") && s.contains("Advance")) {
+        indicators.push("Emergency Advance");
+    } else {
+        missing.push("Emergency Advance");
+    }
+
+    let pass = missing.len() <= 1;
+    let details = if pass {
+        format!("Alias ledger found: {} | Chains: {}", indicators.join(", "), chains.join(", "))
+    } else {
+        format!("Missing alias ledger components: {} | Found: {}", 
+                missing.join(", "), indicators.join(", "))
+    };
+
+    CheckResult {
+        id: "BN-11.9".to_string(),
+        pass,
+        details,
+    }
+}
+
+/// §11.10: Cashu vouchers with Lightning settlement
+fn check_11_10_cashu_vouchers(meta: &BinaryMeta) -> CheckResult {
+    let mut indicators = Vec::new();
+    let mut missing = Vec::new();
+
+    // Cashu implementation
+    if meta.strings.iter().any(|s| s.contains("Cashu") || s.contains("cashu")) {
+        indicators.push("Cashu");
+    } else {
+        missing.push("Cashu");
+    }
+
+    // FROST-Ed25519 mints
+    if meta.strings.iter().any(|s| s.contains("FROST") && s.contains("Ed25519")) {
+        indicators.push("FROST-Ed25519");
+    } else {
+        missing.push("FROST-Ed25519");
+    }
+
+    // 128-byte vouchers
+    if meta.strings.iter().any(|s| s.contains("voucher") || s.contains("Voucher")) {
+        indicators.push("Vouchers");
+    } else {
+        missing.push("Vouchers");
+    }
+
+    // Lightning settlement
+    if meta.strings.iter().any(|s| s.contains("Lightning") || s.contains("lightning")) {
+        indicators.push("Lightning");
+    } else {
+        missing.push("Lightning");
+    }
+
+    // Keyset management
+    if meta.strings.iter().any(|s| s.contains("keyset") || s.contains("Keyset")) {
+        indicators.push("Keyset management");
+    } else {
+        missing.push("Keyset management");
+    }
+
+    let pass = missing.len() <= 2;
+    let details = if pass {
+        format!("Cashu payment system found: {}", indicators.join(", "))
+    } else {
+        format!("Missing Cashu components: {} | Found: {}", 
+                missing.join(", "), indicators.join(", "))
+    };
+
+    CheckResult {
+        id: "BN-11.10".to_string(),
+        pass,
+        details,
+    }
+}
+
+/// §11.11: Governance with anti-concentration caps
+fn check_11_11_governance(meta: &BinaryMeta) -> CheckResult {
+    let mut indicators = Vec::new();
+    let mut missing = Vec::new();
+
+    // Voting power calculation
+    if meta.strings.iter().any(|s| s.contains("vote_weight") || s.contains("voting") && s.contains("power")) {
+        indicators.push("Voting power");
+    } else {
+        missing.push("Voting power");
+    }
+
+    // Uptime score
+    if meta.strings.iter().any(|s| s.contains("uptime") && s.contains("score")) {
+        indicators.push("Uptime scoring");
+    } else {
+        missing.push("Uptime scoring");
+    }
+
+    // Anti-concentration caps
+    if meta.strings.iter().any(|s| s.contains("AS") && (s.contains("cap") || s.contains("20%"))) {
+        indicators.push("AS caps");
+    } else {
+        missing.push("AS caps");
+    }
+
+    // Quorum requirements
+    if meta.strings.iter().any(|s| s.contains("quorum") || s.contains("0.67")) {
+        indicators.push("Quorum");
+    } else {
+        missing.push("Quorum");
+    }
+
+    // Partition safety
+    if meta.strings.iter().any(|s| s.contains("partition") && s.contains("safety")) {
+        indicators.push("Partition safety");
+    } else {
+        missing.push("Partition safety");
+    }
+
+    let pass = missing.len() <= 2;
+    let details = if pass {
+        format!("Governance system found: {}", indicators.join(", "))
+    } else {
+        format!("Missing governance components: {} | Found: {}", 
+                missing.join(", "), indicators.join(", "))
+    };
+
+    CheckResult {
+        id: "BN-11.11".to_string(),
+        pass,
+        details,
+    }
+}
+
+/// §11.12: Anti-correlation fallback with cover connections
+fn check_11_12_anticorrelation_fallback(meta: &BinaryMeta) -> CheckResult {
+    let mut indicators = Vec::new();
+    let mut missing = Vec::new();
+
+    // UDP to TCP fallback
+    if meta.strings.iter().any(|s| s.contains("fallback") && (s.contains("TCP") || s.contains("UDP"))) {
+        indicators.push("UDP→TCP fallback");
+    } else {
+        missing.push("UDP→TCP fallback");
+    }
+
+    // Cover connections
+    if meta.strings.iter().any(|s| s.contains("cover") && s.contains("connection")) {
+        indicators.push("Cover connections");
+    } else {
+        missing.push("Cover connections");
+    }
+
+    // Anti-correlation measures
+    if meta.strings.iter().any(|s| s.contains("anti") && s.contains("correlation")) {
+        indicators.push("Anti-correlation");
+    } else {
+        missing.push("Anti-correlation");
+    }
+
+    // Randomized timing
+    if meta.strings.iter().any(|s| s.contains("random") && (s.contains("delay") || s.contains("timing"))) {
+        indicators.push("Randomized timing");
+    } else {
+        missing.push("Randomized timing");
+    }
+
+    // MASQUE CONNECT-UDP
+    if meta.strings.iter().any(|s| s.contains("MASQUE") || s.contains("CONNECT-UDP")) {
+        indicators.push("MASQUE");
+    } else {
+        missing.push("MASQUE");
+    }
+
+    let pass = missing.len() <= 2;
+    let details = if pass {
+        format!("Anti-correlation fallback found: {}", indicators.join(", "))
+    } else {
+        format!("Missing anti-correlation components: {} | Found: {}", 
+                missing.join(", "), indicators.join(", "))
+    };
+
+    CheckResult {
+        id: "BN-11.12".to_string(),
+        pass,
+        details,
+    }
+}
+
+/// §11.13: SLSA 3 provenance artifacts for reproducible builds (enhanced)
+fn check_11_13_slsa_provenance(meta: &BinaryMeta) -> CheckResult {
+    let mut indicators = Vec::new();
+    let mut missing = Vec::new();
+    
+    // SLSA provenance
+    if meta.strings.iter().any(|s| s.contains("SLSA") || s.contains("slsa")) {
+        indicators.push("SLSA");
+    } else {
+        missing.push("SLSA");
+    }
+    
+    // Provenance artifacts
+    if meta.strings.iter().any(|s| s.contains("provenance") || s.contains("Provenance")) {
+        indicators.push("Provenance artifacts");
+    } else {
+        missing.push("Provenance artifacts");
+    }
+    
+    // Reproducible builds (enhanced detection)
+    if meta.build_reproducibility.has_build_id {
+        indicators.push("Build ID present");
+    } else {
+        missing.push("Build ID");
+    }
+    
+    if !meta.build_reproducibility.deterministic_indicators.is_empty() {
+        indicators.push("Deterministic build indicators");
+    } else {
+        missing.push("Deterministic build indicators");
+    }
+    
+    if !meta.build_reproducibility.timestamp_embedded {
+        indicators.push("No embedded timestamps");
+    } else {
+        missing.push("Deterministic timestamps");
+    }
+    
+    // Build attestation (check for signing symbols/sections)
+    if meta.strings.iter().any(|s| s.contains("attestation") || s.contains("signature")) ||
+       meta.section_names.iter().any(|s| s.contains("signature") || s.contains("sign")) {
+        indicators.push("Build attestation");
+    } else {
+        missing.push("Build attestation");
+    }
+    
+    let pass = missing.len() <= 2; // More lenient for SLSA
+    let details = format!("Build reproducibility analysis: {} | Missing: {} | Build ID: {:?}", 
+                         indicators.join(", "), 
+                         missing.join(", "),
+                         meta.build_reproducibility.build_id_type);
+    
+    CheckResult {
+        id: "BN-11.13".to_string(),
         pass,
         details,
     }
@@ -407,844 +802,122 @@ fn check_11_spec_version(meta: &BinaryMeta) -> CheckResult {
 mod tests {
     use super::*;
     use std::path::PathBuf;
-    
-    fn create_test_meta_all_pass() -> BinaryMeta {
+    use std::collections::HashMap;
+
+    fn create_compliant_test_meta() -> BinaryMeta {
         BinaryMeta {
-            path: PathBuf::from("test_binary_all_pass"),
-            format: crate::binary::BinFormat::Elf, // For CHK-01
-            size_bytes: 2048,
+            path: PathBuf::from("betanet_compliant_binary"),
+            format: crate::binary::BinFormat::Elf,
+            size_bytes: 10485760,
             strings: vec![
-                // CHK-01: PIE is determined by ELF header, not strings for ELF.
-                // CHK-03: Modern Crypto
-                "libp2p".to_string(),
-                "x25519".to_string(),
-                "kyber".to_string(),
-                // CHK-04: Reproducible Build - a long hex string
-                "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_string(),
-                // CHK-09: Secure Randomness
-                "/dev/urandom".to_string(),
-                // CHK-11: Spec Version Tags
-                "BETANET_SPEC_v1.0".to_string(),
-                // CHK-08: QUIC/HTTP3 Support
-                "quic".to_string(),
+                // §11.1: HTX Transport
+                "HTX".to_string(),
+                ":443".to_string(),
+                "QUIC".to_string(),
+                "JA3".to_string(),
+                "ECH".to_string(),
+                // §11.2: Access Tickets
+                "access_ticket".to_string(),
+                "Cookie:".to_string(),
+                "bn1=".to_string(),
+                "nonce".to_string(),
+                "X25519".to_string(),
+                // §11.3: Noise XK
+                "Noise_XK".to_string(),
+                "Kyber".to_string(),
+                "HKDF".to_string(),
+                "KEY_UPDATE".to_string(),
+                // §11.6: Betanet transports
+                "/betanet/htx/1.1.0".to_string(),
+                "/betanet/htxquic/1.1.0".to_string(),
+                // §11.13: SLSA
+                "SLSA".to_string(),
+                "provenance".to_string(),
+                "reproducible_build".to_string(),
             ],
-            sha256: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_string(), // Full length for CHK-04
-            needed_libs: vec!["libfoo.so".to_string(), "libbar.so".to_string(), "libbaz.so".to_string()], // For CHK-02 (dynamic)
-            raw: vec![0x7f, 0x45, 0x4c, 0x46, 0x02, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // ELF magic + ident
-                      0x03, 0x00, // e_type = ET_DYN (PIE)
-                      0x3e, 0x00, // e_machine = EM_X86_64
-                      0x01, 0x00, 0x00, 0x00, // e_version
-                      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // e_entry
-                      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // e_phoff
-                      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // e_shoff
-                      0x00, 0x00, 0x00, 0x00, // e_flags
-                      0x40, 0x00, // e_ehsize
-                      0x38, 0x00, // e_phentsize
-                      0x01, 0x00, // e_phnum
-                      0x40, 0x00, // e_shentsize
-                      0x01, 0x00, // e_shnum
-                      0x00, 0x00, // e_shstrndx
-                     ], // Minimal ELF header for ET_DYN
+            sha256: "a1b2c3d4e5f6".to_string(),
+            needed_libs: vec![
+                "libquic.so".to_string(),
+                "libp2p.so".to_string(),
+                "libnoise.so".to_string(),
+            ],
+            raw: vec![
+                0x7f, 0x45, 0x4c, 0x46, // ELF magic
+                0x02, 0x01, 0x01, 0x00,
+                0x00, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00,
+                0x03, 0x00, // ET_DYN (PIE)
+                0x3e, 0x00, // EM_X86_64
+            ],
             embedded_files: vec![],
-            compiler_info: None,
+            compiler_info: Some(crate::binary::CompilerInfo {
+                compiler: "rustc".to_string(),
+                version: "1.70.0".to_string(),
+                optimization_level: "3".to_string(),
+                target_triple: "x86_64-unknown-linux-gnu".to_string(),
+            }),
             build_environment: crate::binary::BuildEnvironment {
-                build_tool: None,
-                build_version: None,
-                build_timestamp: None,
-                environment_variables: std::collections::HashMap::new(),
+                build_tool: Some("cargo".to_string()),
+                build_version: Some("1.70.0".to_string()),
+                build_timestamp: Some("2024-01-01T00:00:00Z".to_string()),
+                environment_variables: HashMap::new(),
             },
             crypto_components: vec![],
             static_libraries: vec![],
             licenses: vec![],
+            betanet_indicators: crate::binary::BetanetIndicators {
+                htx_transport: vec![],
+                protocol_versions: vec![],
+                crypto_protocols: vec![],
+                network_transports: vec![],
+                p2p_protocols: vec![],
+                governance_indicators: vec![],
+            },
+            build_reproducibility: crate::binary::BuildReproducibility {
+                has_build_id: true,
+                build_id_type: Some("GNU Build ID".to_string()),
+                build_id_value: Some("deadbeef".to_string()),
+                deterministic_indicators: vec!["SOURCE_DATE_EPOCH".to_string()],
+                timestamp_embedded: false,
+            },
+            imported_symbols: vec!["quic_connect".to_string(), "htx_transport_new".to_string()],
+            exported_symbols: vec!["betanet_init".to_string()],
+            section_names: vec![".text".to_string(), ".htx".to_string()],
+            dynamic_dependencies: vec!["libquic.so.1".to_string()],
         }
     }
 
     #[test]
-    fn test_all_checks_pass() {
-        let meta = create_test_meta_all_pass();
+    fn test_compliant_binary_passes_core_checks() {
+        let meta = create_compliant_test_meta();
+        
+        // Test a few key checks
+        let htx_result = check_11_1_htx_transport(&meta);
+        assert!(htx_result.pass, "HTX transport check failed: {}", htx_result.details);
+        
+        let transport_result = check_11_6_betanet_transports(&meta);
+        assert!(transport_result.pass, "Betanet transport check failed: {}", transport_result.details);
+        
+        let tickets_result = check_11_2_access_tickets(&meta);
+        assert!(tickets_result.pass, "Access tickets check failed: {}", tickets_result.details);
+    }
+
+    #[test]
+    fn test_all_checks_return_13_results() {
+        let meta = create_compliant_test_meta();
         let results = run_all_checks(&meta);
-        for result in &results {
-            println!("Check {}: {}", result.id, result.details);
-            assert!(result.pass, "Check {} failed: {}", result.id, result.details);
+
+        assert_eq!(results.len(), 13, "Expected exactly 13 Betanet 1.1 compliance checks");
+        
+        // Verify all check IDs are present
+        let expected_ids: Vec<&str> = vec![
+            "BN-11.1", "BN-11.2", "BN-11.3", "BN-11.4", "BN-11.5", "BN-11.6",
+            "BN-11.7", "BN-11.8", "BN-11.9", "BN-11.10", "BN-11.11", "BN-11.12", "BN-11.13"
+        ];
+        
+        for expected_id in expected_ids {
+            assert!(results.iter().any(|r| r.id == expected_id),
+                   "Missing check ID: {}", expected_id);
         }
-        assert_eq!(results.len(), 11, "Expected 11 checks to run");
-        assert!(results.iter().all(|r| r.pass), "Not all checks passed");
-
-        // Assert specific details for each passing check
-        assert!(results.iter().any(|r| r.id == "CHK-01" && r.details.contains("ELF binary is position-independent (ET_DYN)")), "CHK-01 details mismatch");
-        assert!(results.iter().any(|r| r.id == "CHK-02" && r.details.contains("Appears dynamically linked - 3 dependencies found")), "CHK-02 details mismatch");
-        assert!(results.iter().any(|r| r.id == "CHK-03" && r.details.contains("Modern crypto detected:")), "CHK-03 details mismatch");
-        assert!(results.iter().any(|r| r.id == "CHK-04" && r.details.contains("Build-id like string found:")), "CHK-04 details mismatch");
-        assert!(results.iter().any(|r| r.id == "CHK-05" && r.details.contains("Binary appears to be debug-stripped")), "CHK-05 details mismatch");
-        assert!(results.iter().any(|r| r.id == "CHK-06" && r.details.contains("No forbidden syscalls detected")), "CHK-06 details mismatch");
-        assert!(results.iter().any(|r| r.id == "CHK-07" && r.details.contains("No forbidden cryptographic primitives detected")), "CHK-07 details mismatch");
-        assert!(results.iter().any(|r| r.id == "CHK-08" && r.details.contains("QUIC/HTTP3 support detected:")), "CHK-08 details mismatch");
-        assert!(results.iter().any(|r| r.id == "CHK-09" && r.details.contains("Secure RNG sources found:")), "CHK-09 details mismatch");
-        assert!(results.iter().any(|r| r.id == "CHK-10" && r.details.contains("SBOM generation capability provided by betanet-lint")), "CHK-10 details mismatch");
-        assert!(results.iter().any(|r| r.id == "CHK-11" && r.details.contains("Specification version tags found:")), "CHK-11 details mismatch");
-    }
-
-    fn create_test_meta_9_of_11_pass() -> BinaryMeta {
-        let mut meta = create_test_meta_all_pass();
-        
-        // Make CHK-05 (Debug Section Stripping) fail
-        meta.strings.push(".debug_info".to_string());
-        
-        // Make CHK-06 (Forbidden Syscalls/APIs) fail
-        meta.strings.push("ptrace".to_string());
-        
-        meta
-    }
-
-    #[test]
-    fn test_9_of_11_checks_pass() {
-        let meta = create_test_meta_9_of_11_pass();
-        let results = run_all_checks(&meta);
-        
-        let passed_count = results.iter().filter(|r| r.pass).count();
-        let failed_count = results.iter().filter(|r| !r.pass).count();
-
-        println!("Passed: {}, Failed: {}", passed_count, failed_count);
-        
-        assert_eq!(passed_count, 9, "Expected 9 checks to pass");
-        assert_eq!(failed_count, 2, "Expected 2 checks to fail");
-        
-        assert!(!results.iter().all(|r| r.pass), "All checks unexpectedly passed");
-        assert!(!results.iter().any(|r| r.id == "CHK-05" && r.pass), "CHK-05 unexpectedly passed");
-        assert!(!results.iter().any(|r| r.id == "CHK-06" && r.pass), "CHK-06 unexpectedly passed");
-    }
-
-    fn create_test_meta_10_of_11_pass() -> BinaryMeta {
-        let mut meta = create_test_meta_all_pass();
-        // Make CHK-11 (Specification Version Tags) fail
-        meta.strings.retain(|s| !s.contains("BETANET_SPEC_v"));
-        meta
-    }
-
-    #[test]
-    fn test_10_of_11_checks_pass() {
-        let meta = create_test_meta_10_of_11_pass();
-        let results = run_all_checks(&meta);
-
-        let passed_count = results.iter().filter(|r| r.pass).count();
-        let failed_count = results.iter().filter(|r| !r.pass).count();
-
-        println!("Passed: {}, Failed: {}", passed_count, failed_count);
-
-        assert_eq!(passed_count, 10, "Expected 10 checks to pass");
-        assert_eq!(failed_count, 1, "Expected 1 check to fail");
-
-        assert!(!results.iter().all(|r| r.pass), "All checks unexpectedly passed");
-        assert!(!results.iter().any(|r| r.id == "CHK-11" && r.pass), "CHK-11 unexpectedly passed");
-    }
-
-    // --- CHK-01: Position-Independent Executable (PIE) Tests ---
-
-    #[test]
-    fn test_chk01_elf_pie_pass() {
-        let meta = BinaryMeta {
-            path: PathBuf::from("test_elf_pie"),
-            format: crate::binary::BinFormat::Elf,
-            size_bytes: 100,
-            strings: vec![],
-            sha256: "dummy".to_string(),
-            needed_libs: vec![],
-            raw: vec![0x7f, 0x45, 0x4c, 0x46, 0x02, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // ELF magic + ident
-                      0x03, 0x00, // e_type = ET_DYN (PIE)
-                      0x3e, 0x00, // e_machine = EM_X86_64
-                      0x01, 0x00, 0x00, 0x00, // e_version
-                      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // e_entry
-                      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // e_phoff
-                      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // e_shoff
-                      0x00, 0x00, 0x00, 0x00, // e_flags
-                      0x40, 0x00, // e_ehsize
-                      0x38, 0x00, // e_phentsize
-                      0x01, 0x00, // e_phnum
-                      0x40, 0x00, // e_shentsize
-                      0x01, 0x00, // e_shnum
-                      0x00, 0x00, // e_shstrndx
-                     ], // Minimal ELF header for ET_DYN
-            embedded_files: vec![],
-            compiler_info: None,
-            build_environment: crate::binary::BuildEnvironment { build_tool: None, build_version: None, build_timestamp: None, environment_variables: std::collections::HashMap::new() },
-            crypto_components: vec![],
-            static_libraries: vec![],
-            licenses: vec![],
-        };
-        let result = check_01_pie(&meta);
-        assert!(result.pass, "CHK-01 ELF PIE Pass Test Failed: {}", result.details);
-        assert!(result.details.contains("ELF binary is position-independent (ET_DYN)"));
-    }
-
-    #[test]
-    fn test_chk01_elf_pie_fail() {
-        let meta = BinaryMeta {
-            path: PathBuf::from("test_elf_non_pie"),
-            format: crate::binary::BinFormat::Elf,
-            size_bytes: 100,
-            strings: vec![],
-            sha256: "dummy".to_string(),
-            needed_libs: vec![],
-            raw: vec![0x7f, 0x45, 0x4c, 0x46, 0x02, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // ELF magic + ident
-                      0x02, 0x00, // e_type = ET_EXEC (non-PIE)
-                      0x3e, 0x00, // e_machine = EM_X86_64
-                      0x01, 0x00, 0x00, 0x00, // e_version
-                      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // e_entry
-                      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // e_phoff
-                      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // e_shoff
-                      0x00, 0x00, 0x00, 0x00, // e_flags
-                      0x40, 0x00, // e_ehsize
-                      0x38, 0x00, // e_phentsize
-                      0x01, 0x00, // e_phnum
-                      0x40, 0x00, // e_shentsize
-                      0x01, 0x00, // e_shnum
-                      0x00, 0x00, // e_shstrndx
-                     ], // Minimal ELF header for ET_EXEC
-            embedded_files: vec![],
-            compiler_info: None,
-            build_environment: crate::binary::BuildEnvironment { build_tool: None, build_version: None, build_timestamp: None, environment_variables: std::collections::HashMap::new() },
-            crypto_components: vec![],
-            static_libraries: vec![],
-            licenses: vec![],
-        };
-        let result = check_01_pie(&meta);
-        assert!(!result.pass, "CHK-01 ELF PIE Fail Test Passed unexpectedly");
-        assert!(result.details.contains("ELF binary is not PIE (e_type: 2)"));
-    }
-
-    #[test]
-    fn test_chk01_macho_pie_pass() {
-        let meta = BinaryMeta {
-            path: PathBuf::from("test_macho_pie"),
-            format: crate::binary::BinFormat::MachO,
-            size_bytes: 100,
-            strings: vec!["PIE".to_string()],
-            sha256: "dummy".to_string(),
-            needed_libs: vec![],
-            raw: vec![0xCA, 0xFE, 0xBA, 0xBE], // Mach-O magic
-            embedded_files: vec![],
-            compiler_info: None,
-            build_environment: crate::binary::BuildEnvironment { build_tool: None, build_version: None, build_timestamp: None, environment_variables: std::collections::HashMap::new() },
-            crypto_components: vec![],
-            static_libraries: vec![],
-            licenses: vec![],
-        };
-        let result = check_01_pie(&meta);
-        assert!(result.pass, "CHK-01 Mach-O PIE Pass Test Failed: {}", result.details);
-        assert!(result.details.contains("Mach-O binary appears to support PIE (heuristic)"));
-    }
-
-    #[test]
-    fn test_chk01_macho_pie_fail() {
-        let meta = BinaryMeta {
-            path: PathBuf::from("test_macho_non_pie"),
-            format: crate::binary::BinFormat::MachO,
-            size_bytes: 100,
-            strings: vec!["some_string".to_string()], // No PIE string
-            sha256: "dummy".to_string(),
-            needed_libs: vec![],
-            raw: vec![0xCA, 0xFE, 0xBA, 0xBE], // Mach-O magic
-            embedded_files: vec![],
-            compiler_info: None,
-            build_environment: crate::binary::BuildEnvironment { build_tool: None, build_version: None, build_timestamp: None, environment_variables: std::collections::HashMap::new() },
-            crypto_components: vec![],
-            static_libraries: vec![],
-            licenses: vec![],
-        };
-        let result = check_01_pie(&meta);
-        assert!(!result.pass, "CHK-01 Mach-O PIE Fail Test Passed unexpectedly");
-        assert!(result.details.contains("Mach-O PIE detection not fully implemented"));
-    }
-
-    #[test]
-    fn test_chk01_pe_pie_pass() {
-        let meta = BinaryMeta {
-            path: PathBuf::from("test_pe_pie"),
-            format: crate::binary::BinFormat::PE,
-            size_bytes: 100,
-            strings: vec!["ASLR".to_string()],
-            sha256: "dummy".to_string(),
-            needed_libs: vec![],
-            raw: vec![0x4D, 0x5A], // PE magic
-            embedded_files: vec![],
-            compiler_info: None,
-            build_environment: crate::binary::BuildEnvironment { build_tool: None, build_version: None, build_timestamp: None, environment_variables: std::collections::HashMap::new() },
-            crypto_components: vec![],
-            static_libraries: vec![],
-            licenses: vec![],
-        };
-        let result = check_01_pie(&meta);
-        assert!(result.pass, "CHK-01 PE PIE Pass Test Failed: {}", result.details);
-        assert!(result.details.contains("PE binary appears to support ASLR/PIE (heuristic)"));
-    }
-
-    #[test]
-    fn test_chk01_pe_pie_fail() {
-        let meta = BinaryMeta {
-            path: PathBuf::from("test_pe_non_pie"),
-            format: crate::binary::BinFormat::PE,
-            size_bytes: 100,
-            strings: vec!["some_string".to_string()], // No ASLR string
-            sha256: "dummy".to_string(),
-            needed_libs: vec![],
-            raw: vec![0x4D, 0x5A], // PE magic
-            embedded_files: vec![],
-            compiler_info: None,
-            build_environment: crate::binary::BuildEnvironment { build_tool: None, build_version: None, build_timestamp: None, environment_variables: std::collections::HashMap::new() },
-            crypto_components: vec![],
-            static_libraries: vec![],
-            licenses: vec![],
-        };
-        let result = check_01_pie(&meta);
-        assert!(!result.pass, "CHK-01 PE PIE Fail Test Passed unexpectedly");
-        assert!(result.details.contains("PE ASLR/PIE detection not fully implemented"));
-    }
-
-    // --- CHK-02: Static Linking Detection Tests ---
-
-    #[test]
-    fn test_chk02_dynamic_pass() {
-        let meta = BinaryMeta {
-            path: PathBuf::from("test_dynamic_binary"),
-            format: crate::binary::BinFormat::Elf,
-            size_bytes: 100,
-            strings: vec!["some_string".to_string()], // No static indicators
-            sha256: "dummy".to_string(),
-            needed_libs: vec!["lib1.so".to_string(), "lib2.so".to_string(), "lib3.so".to_string()], // 3+ dynamic libs
-            raw: vec![],
-            embedded_files: vec![],
-            compiler_info: None,
-            build_environment: crate::binary::BuildEnvironment { build_tool: None, build_version: None, build_timestamp: None, environment_variables: std::collections::HashMap::new() },
-            crypto_components: vec![],
-            static_libraries: vec![],
-            licenses: vec![],
-        };
-        let result = check_02_static_linking(&meta);
-        assert!(result.pass, "CHK-02 Dynamic Pass Test Failed: {}", result.details);
-        assert!(result.details.contains("Appears dynamically linked - 3 dependencies found"));
-    }
-
-    #[test]
-    fn test_chk02_static_fail_indicators() {
-        let meta = BinaryMeta {
-            path: PathBuf::from("test_static_binary_indicators"),
-            format: crate::binary::BinFormat::Elf,
-            size_bytes: 100,
-            strings: vec!["static_lib".to_string()], // Static indicator
-            sha256: "dummy".to_string(),
-            needed_libs: vec!["lib1.so".to_string()], // Few dynamic libs
-            raw: vec![],
-            embedded_files: vec![],
-            compiler_info: None,
-            build_environment: crate::binary::BuildEnvironment { build_tool: None, build_version: None, build_timestamp: None, environment_variables: std::collections::HashMap::new() },
-            crypto_components: vec![],
-            static_libraries: vec![],
-            licenses: vec![],
-        };
-        let result = check_02_static_linking(&meta);
-        assert!(!result.pass, "CHK-02 Static Fail Indicators Test Passed unexpectedly");
-        assert!(result.details.contains("Likely statically linked - indicators: [\"static_lib\"], deps: 1"));
-    }
-
-    #[test]
-    fn test_chk02_static_fail_few_deps() {
-        let meta = BinaryMeta {
-            path: PathBuf::from("test_static_binary_few_deps"),
-            format: crate::binary::BinFormat::Elf,
-            size_bytes: 100,
-            strings: vec!["some_string".to_string()], // No static indicators
-            sha256: "dummy".to_string(),
-            needed_libs: vec!["lib1.so".to_string()], // Few dynamic libs
-            raw: vec![],
-            embedded_files: vec![],
-            compiler_info: None,
-            build_environment: crate::binary::BuildEnvironment { build_tool: None, build_version: None, build_timestamp: None, environment_variables: std::collections::HashMap::new() },
-            crypto_components: vec![],
-            static_libraries: vec![],
-            licenses: vec![],
-        };
-        let result = check_02_static_linking(&meta);
-        assert!(!result.pass, "CHK-02 Static Fail Few Deps Test Passed unexpectedly");
-        assert!(result.details.contains("Likely statically linked - indicators: [], deps: 1"));
-    }
-
-    // --- CHK-03: Modern Cryptography and libp2p Tests ---
-
-    #[test]
-    fn test_chk03_modern_crypto_pass() {
-        let meta = BinaryMeta {
-            path: PathBuf::from("test_modern_crypto_pass"),
-            format: crate::binary::BinFormat::Elf,
-            size_bytes: 100,
-            strings: vec!["libp2p".to_string(), "x25519".to_string(), "foo".to_string()],
-            sha256: "dummy".to_string(),
-            needed_libs: vec![],
-            raw: vec![],
-            embedded_files: vec![],
-            compiler_info: None,
-            build_environment: crate::binary::BuildEnvironment { build_tool: None, build_version: None, build_timestamp: None, environment_variables: std::collections::HashMap::new() },
-            crypto_components: vec![],
-            static_libraries: vec![],
-            licenses: vec![],
-        };
-        let result = check_03_modern_crypto(&meta);
-        assert!(result.pass, "CHK-03 Modern Crypto Pass Test Failed: {}", result.details);
-        assert!(result.details.contains("Modern crypto detected: [\"libp2p\", \"x25519\"]"));
-    }
-
-    #[test]
-    fn test_chk03_modern_crypto_fail() {
-        let meta = BinaryMeta {
-            path: PathBuf::from("test_modern_crypto_fail"),
-            format: crate::binary::BinFormat::Elf,
-            size_bytes: 100,
-            strings: vec!["libp2p".to_string(), "foo".to_string()], // Only one modern crypto keyword
-            sha256: "dummy".to_string(),
-            needed_libs: vec![],
-            raw: vec![],
-            embedded_files: vec![],
-            compiler_info: None,
-            build_environment: crate::binary::BuildEnvironment { build_tool: None, build_version: None, build_timestamp: None, environment_variables: std::collections::HashMap::new() },
-            crypto_components: vec![],
-            static_libraries: vec![],
-            licenses: vec![],
-        };
-        let result = check_03_modern_crypto(&meta);
-        assert!(!result.pass, "CHK-03 Modern Crypto Fail Test Passed unexpectedly");
-        assert!(result.details.contains("Insufficient modern crypto markers: [\"libp2p\"] (need 2+)"));
-    }
-
-    // --- CHK-04: Reproducible Build Identifiers Tests ---
-
-    #[test]
-    fn test_chk04_elf_pass() {
-        let meta = BinaryMeta {
-            path: PathBuf::from("test_chk04_elf_pass"),
-            format: crate::binary::BinFormat::Elf,
-            size_bytes: 100,
-            strings: vec!["0123456789abcdef0123456789abcdef".to_string()], // Valid build-id like hex string
-            sha256: "dummy".to_string(),
-            needed_libs: vec![],
-            raw: vec![],
-            embedded_files: vec![],
-            compiler_info: None,
-            build_environment: crate::binary::BuildEnvironment { build_tool: None, build_version: None, build_timestamp: None, environment_variables: std::collections::HashMap::new() },
-            crypto_components: vec![],
-            static_libraries: vec![],
-            licenses: vec![],
-        };
-        let result = check_04_reproducible_build(&meta);
-        assert!(result.pass, "CHK-04 ELF Pass Test Failed: {}", result.details);
-        assert!(result.details.contains("Build-id like string found:"));
-    }
-
-    #[test]
-    fn test_chk04_elf_fail() {
-        let meta = BinaryMeta {
-            path: PathBuf::from("test_chk04_elf_fail"),
-            format: crate::binary::BinFormat::Elf,
-            size_bytes: 100,
-            strings: vec!["short_hex".to_string(), "not_hex_at_all".to_string()], // No valid build-id like hex string
-            sha256: "dummy".to_string(),
-            needed_libs: vec![],
-            raw: vec![],
-            embedded_files: vec![],
-            compiler_info: None,
-            build_environment: crate::binary::BuildEnvironment { build_tool: None, build_version: None, build_timestamp: None, environment_variables: std::collections::HashMap::new() },
-            crypto_components: vec![],
-            static_libraries: vec![],
-            licenses: vec![],
-        };
-        let result = check_04_reproducible_build(&meta);
-        assert!(!result.pass, "CHK-04 ELF Fail Test Passed unexpectedly");
-        assert!(result.details.contains("No reproducible build identifier found (heuristic)"));
-    }
-
-    #[test]
-    fn test_chk04_macho_pass() {
-        let meta = BinaryMeta {
-            path: PathBuf::from("test_chk04_macho_pass"),
-            format: crate::binary::BinFormat::MachO,
-            size_bytes: 100,
-            strings: vec!["UUID".to_string()], // UUID heuristic
-            sha256: "dummy".to_string(),
-            needed_libs: vec![],
-            raw: vec![],
-            embedded_files: vec![],
-            compiler_info: None,
-            build_environment: crate::binary::BuildEnvironment { build_tool: None, build_version: None, build_timestamp: None, environment_variables: std::collections::HashMap::new() },
-            crypto_components: vec![],
-            static_libraries: vec![],
-            licenses: vec![],
-        };
-        let result = check_04_reproducible_build(&meta);
-        assert!(result.pass, "CHK-04 Mach-O Pass Test Failed: {}", result.details);
-        assert!(result.details.contains("UUID-like string found in Mach-O binary (heuristic)"));
-    }
-
-    #[test]
-    fn test_chk04_macho_fail() {
-        let meta = BinaryMeta {
-            path: PathBuf::from("test_chk04_macho_fail"),
-            format: crate::binary::BinFormat::MachO,
-            size_bytes: 100,
-            strings: vec!["some_string".to_string()], // No UUID heuristic
-            sha256: "dummy".to_string(),
-            needed_libs: vec![],
-            raw: vec![],
-            embedded_files: vec![],
-            compiler_info: None,
-            build_environment: crate::binary::BuildEnvironment { build_tool: None, build_version: None, build_timestamp: None, environment_variables: std::collections::HashMap::new() },
-            crypto_components: vec![],
-            static_libraries: vec![],
-            licenses: vec![],
-        };
-        let result = check_04_reproducible_build(&meta);
-        assert!(!result.pass, "CHK-04 Mach-O Fail Test Passed unexpectedly");
-        assert!(result.details.contains("No UUID-like string found in Mach-O binary (heuristic)"));
-    }
-
-    #[test]
-    fn test_chk04_pe_pass() {
-        let meta = BinaryMeta {
-            path: PathBuf::from("test_chk04_pe_pass"),
-            format: crate::binary::BinFormat::PE,
-            size_bytes: 100,
-            strings: vec!["PDB".to_string()], // PDB heuristic
-            sha256: "dummy".to_string(),
-            needed_libs: vec![],
-            raw: vec![],
-            embedded_files: vec![],
-            compiler_info: None,
-            build_environment: crate::binary::BuildEnvironment { build_tool: None, build_version: None, build_timestamp: None, environment_variables: std::collections::HashMap::new() },
-            crypto_components: vec![],
-            static_libraries: vec![],
-            licenses: vec![],
-        };
-        let result = check_04_reproducible_build(&meta);
-        assert!(result.pass, "CHK-04 PE Pass Test Failed: {}", result.details);
-        assert!(result.details.contains("PDB-like string found in PE binary (heuristic)"));
-    }
-
-    #[test]
-    fn test_chk04_pe_fail() {
-        let meta = BinaryMeta {
-            path: PathBuf::from("test_chk04_pe_fail"),
-            format: crate::binary::BinFormat::PE,
-            size_bytes: 100,
-            strings: vec!["some_string".to_string()], // No PDB heuristic
-            sha256: "dummy".to_string(),
-            needed_libs: vec![],
-            raw: vec![],
-            embedded_files: vec![],
-            compiler_info: None,
-            build_environment: crate::binary::BuildEnvironment { build_tool: None, build_version: None, build_timestamp: None, environment_variables: std::collections::HashMap::new() },
-            crypto_components: vec![],
-            static_libraries: vec![],
-            licenses: vec![],
-        };
-        let result = check_04_reproducible_build(&meta);
-        assert!(!result.pass, "CHK-04 PE Fail Test Passed unexpectedly");
-        assert!(result.details.contains("No PDB-like string found in PE binary (heuristic)"));
-    }
-
-    // --- CHK-05: Debug Section Stripping Tests ---
-
-    #[test]
-    fn test_chk05_stripped_pass() {
-        let meta = BinaryMeta {
-            path: PathBuf::from("test_stripped_binary"),
-            format: crate::binary::BinFormat::Elf,
-            size_bytes: 100,
-            strings: vec!["some_string".to_string()], // No debug indicators
-            sha256: "dummy".to_string(),
-            needed_libs: vec![],
-            raw: vec![],
-            embedded_files: vec![],
-            compiler_info: None,
-            build_environment: crate::binary::BuildEnvironment { build_tool: None, build_version: None, build_timestamp: None, environment_variables: std::collections::HashMap::new() },
-            crypto_components: vec![],
-            static_libraries: vec![],
-            licenses: vec![],
-        };
-        let result = check_05_debug_stripped(&meta);
-        assert!(result.pass, "CHK-05 Stripped Pass Test Failed: {}", result.details);
-        assert!(result.details.contains("Binary appears to be debug-stripped"));
-    }
-
-    #[test]
-    fn test_chk05_not_stripped_fail() {
-        let meta = BinaryMeta {
-            path: PathBuf::from("test_not_stripped_binary"),
-            format: crate::binary::BinFormat::Elf,
-            size_bytes: 100,
-            strings: vec!["some_string".to_string(), ".debug_info".to_string()], // Debug indicator
-            sha256: "dummy".to_string(),
-            needed_libs: vec![],
-            raw: vec![],
-            embedded_files: vec![],
-            compiler_info: None,
-            build_environment: crate::binary::BuildEnvironment { build_tool: None, build_version: None, build_timestamp: None, environment_variables: std::collections::HashMap::new() },
-            crypto_components: vec![],
-            static_libraries: vec![],
-            licenses: vec![],
-        };
-        let result = check_05_debug_stripped(&meta);
-        assert!(!result.pass, "CHK-05 Not Stripped Fail Test Passed unexpectedly");
-        assert!(Regex::new(r"Debug sections detected: \[(.*\.debug_.*|.*debug_info.*)\]").unwrap().is_match(&result.details));
-    }
-
-    // --- CHK-06: Forbidden Syscalls/APIs Tests ---
-
-    #[test]
-    fn test_chk06_forbidden_syscalls_pass() {
-        let meta = BinaryMeta {
-            path: PathBuf::from("test_no_forbidden_syscalls"),
-            format: crate::binary::BinFormat::Elf,
-            size_bytes: 100,
-            strings: vec!["safe_call".to_string()], // No forbidden calls
-            sha256: "dummy".to_string(),
-            needed_libs: vec![],
-            raw: vec![],
-            embedded_files: vec![],
-            compiler_info: None,
-            build_environment: crate::binary::BuildEnvironment { build_tool: None, build_version: None, build_timestamp: None, environment_variables: std::collections::HashMap::new() },
-            crypto_components: vec![],
-            static_libraries: vec![],
-            licenses: vec![],
-        };
-        let result = check_06_forbidden_syscalls(&meta);
-        assert!(result.pass, "CHK-06 Forbidden Syscalls Pass Test Failed: {}", result.details);
-        assert!(result.details.contains("No forbidden syscalls detected"));
-    }
-
-    #[test]
-    fn test_chk06_forbidden_syscalls_fail() {
-        let meta = BinaryMeta {
-            path: PathBuf::from("test_forbidden_syscalls"),
-            format: crate::binary::BinFormat::Elf,
-            size_bytes: 100,
-            strings: vec!["ptrace".to_string()], // Forbidden call
-            sha256: "dummy".to_string(),
-            needed_libs: vec![],
-            raw: vec![],
-            embedded_files: vec![],
-            compiler_info: None,
-            build_environment: crate::binary::BuildEnvironment { build_tool: None, build_version: None, build_timestamp: None, environment_variables: std::collections::HashMap::new() },
-            crypto_components: vec![],
-            static_libraries: vec![],
-            licenses: vec![],
-        };
-        let result = check_06_forbidden_syscalls(&meta);
-        assert!(!result.pass, "CHK-06 Forbidden Syscalls Fail Test Passed unexpectedly");
-        assert!(result.details.contains("Forbidden syscalls found: [\"ptrace\"]"));
-    }
-
-    // --- CHK-07: Cryptographic Primitive Whitelist Tests ---
-
-    #[test]
-    fn test_chk07_crypto_whitelist_pass() {
-        let meta = BinaryMeta {
-            path: PathBuf::from("test_crypto_whitelist_pass"),
-            format: crate::binary::BinFormat::Elf,
-            size_bytes: 100,
-            strings: vec!["safe_crypto".to_string()], // No forbidden crypto
-            sha256: "dummy".to_string(),
-            needed_libs: vec![],
-            raw: vec![],
-            embedded_files: vec![],
-            compiler_info: None,
-            build_environment: crate::binary::BuildEnvironment { build_tool: None, build_version: None, build_timestamp: None, environment_variables: std::collections::HashMap::new() },
-            crypto_components: vec![],
-            static_libraries: vec![],
-            licenses: vec![],
-        };
-        let result = check_07_crypto_whitelist(&meta);
-        assert!(result.pass, "CHK-07 Crypto Whitelist Pass Test Failed: {}", result.details);
-        assert!(result.details.contains("No forbidden cryptographic primitives detected"));
-    }
-
-    #[test]
-    fn test_chk07_crypto_whitelist_fail() {
-        let meta = BinaryMeta {
-            path: PathBuf::from("test_crypto_whitelist_fail"),
-            format: crate::binary::BinFormat::Elf,
-            size_bytes: 100,
-            strings: vec!["rsa".to_string()], // Forbidden crypto
-            sha256: "dummy".to_string(),
-            needed_libs: vec![],
-            raw: vec![],
-            embedded_files: vec![],
-            compiler_info: None,
-            build_environment: crate::binary::BuildEnvironment { build_tool: None, build_version: None, build_timestamp: None, environment_variables: std::collections::HashMap::new() },
-            crypto_components: vec![],
-            static_libraries: vec![],
-            licenses: vec![],
-        };
-        let result = check_07_crypto_whitelist(&meta);
-        assert!(!result.pass, "CHK-07 Crypto Whitelist Fail Test Passed unexpectedly");
-        assert!(result.details.contains("Forbidden crypto primitives found: [\"rsa\"]"));
-    }
-
-    // --- CHK-08: QUIC/HTTP3 Support Tests ---
-
-    #[test]
-    fn test_chk08_quic_http3_pass() {
-        let meta = BinaryMeta {
-            path: PathBuf::from("test_quic_http3_pass"),
-            format: crate::binary::BinFormat::Elf,
-            size_bytes: 100,
-            strings: vec!["quic".to_string()], // QUIC indicator
-            sha256: "dummy".to_string(),
-            needed_libs: vec![],
-            raw: vec![],
-            embedded_files: vec![],
-            compiler_info: None,
-            build_environment: crate::binary::BuildEnvironment { build_tool: None, build_version: None, build_timestamp: None, environment_variables: std::collections::HashMap::new() },
-            crypto_components: vec![],
-            static_libraries: vec![],
-            licenses: vec![],
-        };
-        let result = check_08_quic_http3(&meta);
-        assert!(result.pass, "CHK-08 QUIC/HTTP3 Pass Test Failed: {}", result.details);
-        assert!(result.details.contains("QUIC/HTTP3 support detected: [\"quic\"]"));
-    }
-
-    #[test]
-    fn test_chk08_quic_http3_fail() {
-        let meta = BinaryMeta {
-            path: PathBuf::from("test_quic_http3_fail"),
-            format: crate::binary::BinFormat::Elf,
-            size_bytes: 100,
-            strings: vec!["some_string".to_string()], // No QUIC/HTTP3 indicators
-            sha256: "dummy".to_string(),
-            needed_libs: vec![],
-            raw: vec![],
-            embedded_files: vec![],
-            compiler_info: None,
-            build_environment: crate::binary::BuildEnvironment { build_tool: None, build_version: None, build_timestamp: None, environment_variables: std::collections::HashMap::new() },
-            crypto_components: vec![],
-            static_libraries: vec![],
-            licenses: vec![],
-        };
-        let result = check_08_quic_http3(&meta);
-        assert!(!result.pass, "CHK-08 QUIC/HTTP3 Fail Test Passed unexpectedly");
-        assert!(result.details.contains("No QUIC/HTTP3 support indicators found"));
-    }
-
-    // --- CHK-09: Secure Randomness Tests ---
-
-    #[test]
-    fn test_chk09_secure_randomness_pass() {
-        let meta = BinaryMeta {
-            path: PathBuf::from("test_secure_randomness_pass"),
-            format: crate::binary::BinFormat::Elf,
-            size_bytes: 100,
-            strings: vec!["/dev/urandom".to_string()], // Secure RNG source
-            sha256: "dummy".to_string(),
-            needed_libs: vec![],
-            raw: vec![],
-            embedded_files: vec![],
-            compiler_info: None,
-            build_environment: crate::binary::BuildEnvironment { build_tool: None, build_version: None, build_timestamp: None, environment_variables: std::collections::HashMap::new() },
-            crypto_components: vec![],
-            static_libraries: vec![],
-            licenses: vec![],
-        };
-        let result = check_09_secure_randomness(&meta);
-        assert!(result.pass, "CHK-09 Secure Randomness Pass Test Failed: {}", result.details);
-        assert!(result.details.contains("Secure RNG sources found: [\"/dev/urandom\"]"));
-    }
-
-    #[test]
-    fn test_chk09_secure_randomness_fail() {
-        let meta = BinaryMeta {
-            path: PathBuf::from("test_secure_randomness_fail"),
-            format: crate::binary::BinFormat::Elf,
-            size_bytes: 100,
-            strings: vec!["insecure_random".to_string()], // No secure RNG sources
-            sha256: "dummy".to_string(),
-            needed_libs: vec![],
-            raw: vec![],
-            embedded_files: vec![],
-            compiler_info: None,
-            build_environment: crate::binary::BuildEnvironment { build_tool: None, build_version: None, build_timestamp: None, environment_variables: std::collections::HashMap::new() },
-            crypto_components: vec![],
-            static_libraries: vec![],
-            licenses: vec![],
-        };
-        let result = check_09_secure_randomness(&meta);
-        assert!(!result.pass, "CHK-09 Secure Randomness Fail Test Passed unexpectedly");
-        assert!(result.details.contains("No secure randomness sources detected"));
-    }
-
-    // --- CHK-10: SBOM Generation Capability Tests ---
-
-    #[test]
-    fn test_chk10_sbom_capability_pass() {
-        let meta = BinaryMeta {
-            path: PathBuf::from("test_sbom_capability_pass"),
-            format: crate::binary::BinFormat::Elf,
-            size_bytes: 100,
-            strings: vec![],
-            sha256: "dummy".to_string(),
-            needed_libs: vec![],
-            raw: vec![],
-            embedded_files: vec![],
-            compiler_info: None,
-            build_environment: crate::binary::BuildEnvironment { build_tool: None, build_version: None, build_timestamp: None, environment_variables: std::collections::HashMap::new() },
-            crypto_components: vec![],
-            static_libraries: vec![],
-            licenses: vec![],
-        };
-        let result = check_10_sbom_capability(&meta);
-        assert!(result.pass, "CHK-10 SBOM Capability Pass Test Failed: {}", result.details);
-        assert!(result.details.contains("SBOM generation capability provided by betanet-lint"));
-    }
-
-    // --- CHK-11: Specification Version Tags Tests ---
-
-    #[test]
-    fn test_chk11_spec_version_pass() {
-        let meta = BinaryMeta {
-            path: PathBuf::from("test_spec_version_pass"),
-            format: crate::binary::BinFormat::Elf,
-            size_bytes: 100,
-            strings: vec!["BETANET_SPEC_v1.0".to_string()], // Version tag
-            sha256: "dummy".to_string(),
-            needed_libs: vec![],
-            raw: vec![],
-            embedded_files: vec![],
-            compiler_info: None,
-            build_environment: crate::binary::BuildEnvironment { build_tool: None, build_version: None, build_timestamp: None, environment_variables: std::collections::HashMap::new() },
-            crypto_components: vec![],
-            static_libraries: vec![],
-            licenses: vec![],
-        };
-        let result = check_11_spec_version(&meta);
-        assert!(result.pass, "CHK-11 Spec Version Pass Test Failed: {}", result.details);
-        assert!(result.details.contains("Specification version tags found: [\"BETANET_SPEC_v1.0\"]"));
-    }
-
-    #[test]
-    fn test_chk11_spec_version_fail() {
-        let meta = BinaryMeta {
-            path: PathBuf::from("test_spec_version_fail"),
-            format: crate::binary::BinFormat::Elf,
-            size_bytes: 100,
-            strings: vec!["some_string".to_string()], // No version tag
-            sha256: "dummy".to_string(),
-            needed_libs: vec![],
-            raw: vec![],
-            embedded_files: vec![],
-            compiler_info: None,
-            build_environment: crate::binary::BuildEnvironment { build_tool: None, build_version: None, build_timestamp: None, environment_variables: std::collections::HashMap::new() },
-            crypto_components: vec![],
-            static_libraries: vec![],
-            licenses: vec![],
-        };
-        let result = check_11_spec_version(&meta);
-        assert!(!result.pass, "CHK-11 Spec Version Fail Test Passed unexpectedly");
-        assert!(result.details.contains("No BETANET_SPEC_v*.* version tags found"));
     }
 }

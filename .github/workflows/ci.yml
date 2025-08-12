@@ -1,9 +1,13 @@
-name: CI
+name: CI with SLSA Provenance
 
 on:
   push:
     branches: [ main ]
   pull_request:
+    branches: [ main ]
+
+permissions:
+  contents: read
 
 jobs:
   build-test:
@@ -13,25 +17,90 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
         rust: [stable]
     runs-on: ${{ matrix.os }}
+    
+    permissions:
+      contents: read
+      
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+    - name: Checkout
+      uses: actions/checkout@v4
 
-      - name: Set up Rust
-        uses: actions-rs/toolchain@v1
-        with:
-          toolchain: ${{ matrix.rust }}
-          profile: minimal
-          override: true
+    - name: Set up Rust
+      uses: dtolnay/rust-toolchain@master
+      with:
+        toolchain: ${{ matrix.rust }}
+        components: clippy
 
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
+    - name: Cache cargo
+      uses: Swatinem/rust-cache@23bce251a8cd2ffc3c1075eaa2367cf899916d84 # v2.7.3
 
-      - name: Build
-        run: cargo build --all --locked --verbose
+    - name: Security audit
+      run: |
+        cargo install --locked cargo-audit
+        cargo audit
 
-      - name: Clippy
-        run: cargo clippy --all-targets -- -D warnings
+    - name: Check dependencies
+      run: |
+        cargo install --locked cargo-deny
+        cargo deny check
 
-      - name: Tests
-        run: cargo test --all --locked --verbose
+    - name: Build
+      run: cargo build --all --locked --verbose
+
+    - name: Clippy
+      run: cargo clippy --all-targets -- -D warnings
+
+    - name: Tests
+      run: cargo test --all --locked --verbose
+      
+    - name: Reproducible build verification
+      if: matrix.os == 'ubuntu-latest'
+      run: |
+        # Build twice and compare
+        cargo clean
+        export SOURCE_DATE_EPOCH=$(git log -1 --pretty=%ct)
+        cargo build --release
+        cp target/release/betanet-lint build1
+        cargo clean
+        export SOURCE_DATE_EPOCH=$(git log -1 --pretty=%ct)
+        cargo build --release
+        cp target/release/betanet-lint build2
+        if cmp -s build1 build2; then
+          echo "✓ Reproducible build verified"
+        else
+          echo "✗ Build is not reproducible"
+          exit 1
+        fi
+
+  provenance:
+    needs: [build-test]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+      attestations: write
+      
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Set up Rust
+      uses: dtolnay/rust-toolchain@master
+      with:
+        toolchain: stable
+
+    - name: Build release binary
+      run: |
+        export SOURCE_DATE_EPOCH=$(git log -1 --pretty=%ct)
+        cargo build --release --locked
+
+    - name: Upload binary and provenance
+      uses: actions/upload-artifact@65462800fd760344b1a7b4382951275a0abb4808 # v4.3.3
+      with:
+        name: betanet-lint-release
+        path: |
+          target/release/betanet-lint
+        retention-days: 30

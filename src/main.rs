@@ -1,17 +1,7 @@
 use clap::Parser;
 use prettytable::{row, Table};
 use std::path::PathBuf;
-
-mod binary;
-mod checks;
-mod sbom;
-
-// Embed the BETANET_SPEC_vX.Y tag for CHK-11
-const BETANET_SPEC_VERSION_TAG: &str = "BETANET_SPEC_v1.0";
-
-use binary::BinaryMeta;
-use checks::{run_all_checks, write_report_json};
-use sbom::{write_sbom_with_options, SbomFormat, SbomOptions, LicenseScanDepth};
+use betanet_lint::{binary::BinaryMeta, checks::{run_all_checks, write_report_json}, sbom::{write_sbom_with_options, SbomFormat, SbomOptions, LicenseScanDepth}};
 
 #[derive(Parser, Debug)]
 #[command(author, version, about = "Betanet §11 compliance linter with enhanced SBOM", long_about = None)]
@@ -27,27 +17,27 @@ struct Cli {
     /// Optional: Path to SBOM JSON
     #[arg(long)]
     sbom: Option<String>,
-    
+
     /// SBOM format: cyclonedx or spdx
     #[arg(long, default_value = "cyclonedx")]
     sbom_format: String,
-    
+
     /// Include vulnerability data in SBOM
     #[arg(long)]
     include_vulns: bool,
-    
+
     /// Generate CBOM (Cryptographic BOM)
     #[arg(long)]
     generate_cbom: bool,
-    
+
     /// License scanning depth: basic, comprehensive, deep
     #[arg(long, default_value = "basic")]
     license_scan: String,
-    
+
     /// Generate VEX statements
     #[arg(long)]
     generate_vex: bool,
-    
+
     /// SLSA provenance level (1-4)
     #[arg(long, default_value = "1")]
     slsa_level: u8,
@@ -57,32 +47,29 @@ fn main() {
     env_logger::init();
     let cli = Cli::parse();
 
-    log::info!("Starting enhanced betanet-lint on '{}'", cli.binary);
+    log::info!("Starting betanet-lint on '{}'", cli.binary);
 
-    // Extract binary metadata with enhanced analysis
-    let mut meta = match BinaryMeta::from_path(cli.binary.clone().into()) {
+    // Extract binary metadata - NO ARTIFICIAL MANIPULATION
+    let meta = match BinaryMeta::from_path(cli.binary.clone().into()) {
         Ok(m) => m,
         Err(e) => {
-            eprintln!("Failed to read binary: {}", e);
+            eprintln!("Failed to read binary: {e}");
             std::process::exit(1);
         }
     };
 
-    // Add the version tag to the binary's strings for self-compliance
-    // This is done here rather than in BinaryMeta::from_path to avoid
-    // modifying existing binaries' metadata outside of this specific use case.
-    meta.strings.push(BETANET_SPEC_VERSION_TAG.to_string());
-
     println!("\nAnalyzing binary: {}", cli.binary);
-    println!(" Format: {:?}", meta.format);
-    println!(" Size: {} bytes", meta.size_bytes);
-    println!(" Dependencies: {} libraries", meta.needed_libs.len());
-    println!(" Crypto components: {}", meta.crypto_components.len());
-    println!(" Licenses detected: {}", meta.licenses.len());
-    println!(" Static libraries: {}", meta.static_libraries.len());
+    println!("  Format: {:?}", meta.format);
+    println!("  Size: {} bytes", meta.size_bytes);
+    println!("  Dependencies: {} libraries", meta.needed_libs.len());
+    println!("  Crypto components: {}", meta.crypto_components.len());
+    println!("  Licenses detected: {}", meta.licenses.len());
+    println!("  Static libraries: {}", meta.static_libraries.len());
+    println!("  Imported symbols: {}", meta.imported_symbols.len());
+    println!("  Exported symbols: {}", meta.exported_symbols.len());
     println!();
 
-    // Run compliance checks
+    // Run compliance checks - NO SYNTHETIC DATA INJECTION
     let results = run_all_checks(&meta);
 
     // Pretty table output
@@ -96,7 +83,7 @@ fn main() {
     // Write compliance report JSON
     let report_path = PathBuf::from(&cli.report);
     if let Err(e) = write_report_json(&report_path, &cli.binary, &results) {
-        eprintln!("Failed to write report: {}", e);
+        eprintln!("Failed to write report: {e}");
     } else {
         println!("Wrote report to {}", report_path.display());
     }
@@ -108,21 +95,22 @@ fn main() {
         } else {
             SbomFormat::CycloneDx
         };
-        
+
         let license_scan_depth = match cli.license_scan.as_str() {
             "comprehensive" => LicenseScanDepth::Comprehensive,
             "deep" => LicenseScanDepth::Deep,
             _ => LicenseScanDepth::Basic,
         };
-        
+
         let options = SbomOptions {
             include_vulnerabilities: cli.include_vulns,
             generate_cbom: cli.generate_cbom,
             license_scan_depth,
             generate_vex: cli.generate_vex,
             slsa_level: cli.slsa_level.clamp(1, 4),
+            include_provenance: true,
         };
-        
+
         match write_sbom_with_options(&PathBuf::from(&sbom_path), &meta, format, options) {
             Ok(_) => {
                 println!("Wrote enhanced {} SBOM to {}", cli.sbom_format.to_uppercase(), sbom_path);
@@ -136,7 +124,7 @@ fn main() {
                     println!("  ✓ Generated VEX statements");
                 }
             }
-            Err(e) => eprintln!("Failed to write SBOM: {}", e),
+            Err(e) => eprintln!("Failed to write SBOM: {e}"),
         }
     }
 
@@ -144,18 +132,22 @@ fn main() {
     let passed = results.iter().filter(|r| r.pass).count();
     let total = results.len();
     println!("\n=== SUMMARY ===");
-    println!("Compliance: {}/{} checks passed", passed, total);
-    
+    println!("Compliance: {passed}/{total} checks passed");
+
     if meta.crypto_components.is_empty() {
         println!("⚠️  No cryptographic components detected");
     } else {
         println!("🔒 {} cryptographic components found", meta.crypto_components.len());
     }
-    
+
     if meta.licenses.is_empty() {
         println!("⚠️  No license information detected");
     } else {
         println!("📄 {} license(s) detected", meta.licenses.len());
+    }
+
+    if meta.build_reproducibility.has_build_id {
+        println!("🔨 Build ID detected: {:?}", meta.build_reproducibility.build_id_type);
     }
 
     // Exit non-zero if any check failed

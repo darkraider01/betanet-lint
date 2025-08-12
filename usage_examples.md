@@ -172,7 +172,7 @@ int main() {
 ## CHK-04: Reproducible Build Identifiers
 
 ### Scenario: Pass (Build ID Present)
-A binary containing a build-id like hex string (for ELF) or UUID/PDB indicators (for Mach-O/PE).
+A binary containing a build-id like hex string (for ELF) or UUID indicators (for Mach-O). *Note: PE PDB GUIDs are currently not supported due to external library limitations.*
 ```c
 // example_reproducible_pass.c
 #include <stdio.h>

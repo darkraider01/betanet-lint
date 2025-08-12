@@ -63,7 +63,7 @@ Exit codes:
 - CHK‑01: Position‑Independent Executable (PIE) where detectable
 - CHK‑02: Avoid obvious static linking artifacts
 - CHK‑03: libp2p and modern crypto indicators (e.g., kyber, x25519, ed25519, quic)
-- CHK‑04: Reproducible build identifiers (ELF GNU build‑id, Mach‑O UUID, PE PDB GUID)
+- CHK‑04: Reproducible build identifiers (ELF GNU build‑id, Mach‑O UUID) - *Note: PE PDB GUID currently not supported due to external library limitations.*
 - CHK‑05: Stripped debug sections indicators
 - CHK‑06: No forbidden syscalls/API names
 - CHK‑07: No disallowed crypto primitives (e.g., rsa, des, md5)

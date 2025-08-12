@@ -2,43 +2,48 @@
 name = "betanet-lint"
 version = "0.1.0"
 edition = "2021"
+authors = ["Betanet Team <team@betanet.org>"]
+description = "Betanet §11 compliance linter with enhanced SBOM generation"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/darkraider01/betanet-lint"
+
+[[bin]]
+name = "betanet-lint"
+path = "src/main.rs"
 
 [dependencies]
-clap = { version = "4.5", features = ["derive"] }
-prettytable = "0.10"
+clap = { version = "4.4", features = ["derive"] }
+goblin = "0.7"
+sha2 = "0.10"
+md5 = "0.7"
+regex = "1.10"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-log = "0.4"
-env_logger = "0.11"
-sha2 = "0.10"
-hex = "0.4"
-goblin = "0.8"
-regex = "1.10"
-anyhow = "1.0"
-uuid = "1.0"
-twoway = "0.2"
-byteorder = "1.5"
-
-# Enhanced SBOM dependencies
-thiserror = "1.0"
-strum = { version = "0.26", features = ["derive"] }
-cyclonedx-bom = "0.6"
-spdx-rs = "0.5"
 chrono = { version = "0.4", features = ["serde"] }
-md5 = "0.7"
+prettytable-rs = "0.10"
+env_logger = "0.10"
+log = "0.4"
+thiserror = "1.0"
+uuid = { version = "1.6", features = ["v4"] }
+strum = { version = "0.25", features = ["derive"] }
 
-# Advanced SBOM capabilities
+# SBOM dependencies
+cyclonedx-bom = "0.5"
 tokio = { version = "1.0", features = ["full"] }
 reqwest = { version = "0.11", features = ["json"] }
-ar = "0.9"
-petgraph = "0.6"
-semver = "1.0"
-base64 = "0.22"
+
+# New dependencies for enhanced analysis
+memmap2 = "0.9"
+byteorder = "1.5"
+hex = "0.4"
 
 [dev-dependencies]
+tempfile = "3.8"
 assert_cmd = "2.0"
-tempfile = "3.10"
 
 [profile.release]
-debug = false
-strip = "symbols"
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

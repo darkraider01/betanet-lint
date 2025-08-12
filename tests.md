@@ -44,8 +44,8 @@ These tests verify the behavior of each individual compliance check under both p
 *   `test_chk04_elf_fail`: No reproducible build identifier found in ELF. **Status**: PASSED
 *   `test_chk04_macho_pass`: UUID-like string found in Mach-O (heuristic). **Status**: PASSED
 *   `test_chk04_macho_fail`: No UUID-like string found in Mach-O (heuristic). **Status**: PASSED
-*   `test_chk04_pe_pass`: PDB-like string found in PE (heuristic). **Status**: PASSED
-*   `test_chk04_pe_fail`: No PDB-like string found in PE (heuristic). **Status**: PASSED
+*   `test_chk04_pe_pass`: PDB-like string found in PE (heuristic). **Status**: SKIPPED (due to `goblin` library limitations)
+*   `test_chk04_pe_fail`: No PDB-like string found in PE (heuristic). **Status**: SKIPPED (due to `goblin` library limitations)
 
 ### `CHK-05: Debug Section Stripping`
 *   `test_chk05_stripped_pass`: Binary appears to be debug-stripped. **Status**: PASSED

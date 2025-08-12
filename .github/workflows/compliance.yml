@@ -1,4 +1,4 @@
-name: Betanet Compliance
+name: Betanet Compliance with SLSA
 
 on:
   push:
@@ -6,36 +6,102 @@ on:
   pull_request:
     branches: [ main ]
 
+permissions:
+  contents: read
+
 jobs:
   compliance:
     runs-on: ubuntu-latest
+    
+    permissions:
+      contents: read
+      actions: read
+      
     steps:
-      - uses: actions/checkout@v4
+    - name: Checkout
+      uses: actions/checkout@v4
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+    - name: Set up Rust
+      uses: dtolnay/rust-toolchain@master
+      with:
+        toolchain: stable
 
-      - name: Build
-        run: cargo build --release
+    - name: Security audit
+      run: |
+        cargo install --locked cargo-audit
+        cargo audit
 
-      - name: Build fixture (example)
-        run: |
-          cat > fixture_good.c <<'C'
-          #include <stdio.h>
-          static const char *markers = "kyber x25519 ed25519 libp2p quic BETANET_SPEC_v1.0 /dev/urandom";
-          int main(void){ (void)markers; puts("fixture"); return 0; }
-          C
-          gcc -O0 fixture_good.c -o fixture_good
+    - name: Build with reproducible settings
+      run: |
+        export SOURCE_DATE_EPOCH=$(git log -1 --pretty=%ct)
+        cargo build --release --locked
+        
+    - name: Create Betanet-compliant test fixture
+      run: |
+        cat > fixture_betanet.c <<'C'
+        #include <stdio.h>
+        // Betanet 1.1 compliance markers
+        static const char *betanet_markers = 
+            "HTX QUIC ECH JA3 access_ticket Cookie: X25519 Kyber "
+            "Noise_XK KEY_UPDATE /betanet/htx/1.1.0 /betanet/htxquic/1.1.0 "
+            "SLSA provenance reproducible_build BeaconSet rendezvous "
+            "Cashu Lightning FROST-Ed25519 vote_weight quorum";
+        int main(void) { 
+            (void)betanet_markers; 
+            puts("Betanet 1.1 compliant binary"); 
+            return 0; 
+        }
+        C
+        gcc -O2 -fPIE -pie fixture_betanet.c -o fixture_betanet
 
-      - name: Run compliance linter
-        run: |
-          ./target/release/betanet-lint --binary ./fixture_good --report report.json --sbom sbom.json
-        continue-on-error: false
+    - name: Run Betanet 1.1 compliance checks
+      run: |
+        ./target/release/betanet-lint --binary ./fixture_betanet --report compliance_report.json --sbom compliance_sbom.json
+        echo "Compliance check completed"
 
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: betanet-lint-report
-          path: |
-            report.json
-            sbom.json
+    - name: Validate compliance report
+      run: |
+        # Check that all 13 Betanet 1.1 checks were run
+        check_count=$(jq '.total_checks' compliance_report.json)
+        if [ "$check_count" != "13" ]; then
+          echo "Error: Expected 13 checks, got $check_count"
+          exit 1
+        fi
+        
+        # Check spec version
+        spec_version=$(jq -r '.spec_version' compliance_report.json)
+        if [ "$spec_version" != "Betanet 1.1" ]; then
+          echo "Error: Expected Betanet 1.1, got $spec_version"
+          exit 1
+        fi
+        
+        echo "Compliance report validation passed"
+
+    - name: Generate compliance attestation
+      run: |
+        # Create a simple attestation of the compliance check
+        cat > compliance_attestation.json <<EOF
+        {
+          "version": 1,
+          "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+          "binary_sha256": "$(sha256sum fixture_betanet | cut -d' ' -f1)",
+          "compliance_tool": "betanet-lint",
+          "spec_version": "Betanet 1.1",
+          "total_checks": $(jq '.total_checks' compliance_report.json),
+          "passed_checks": $(jq '.passed_checks' compliance_report.json),
+          "overall_compliance": $(jq '.overall_compliance' compliance_report.json),
+          "github_run_id": "${{ github.run_id }}",
+          "github_sha": "${{ github.sha }}"
+        }
+        EOF
+
+    - name: Upload compliance artifacts
+      uses: actions/upload-artifact@65462800fd760344b1a7b4382951275a0abb4808 # v4.3.3
+      with:
+        name: betanet-compliance-artifacts
+        path: |
+          compliance_report.json
+          compliance_sbom.json
+          compliance_attestation.json
+          fixture_betanet
+        retention-days: 30
