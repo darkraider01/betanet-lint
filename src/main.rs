@@ -29,7 +29,7 @@ struct Cli {
     sbom: Option<String>,
 
     /// SBOM format: cyclonedx or spdx
-    #[arg(long, default_value = "spdx")]
+    #[arg(long, default_value = "cyclonedx")]
     sbom_format: String,
 
     /// Include vulnerability data in SBOM
@@ -69,13 +69,11 @@ async fn main() -> Result<()> {
     if !binary_path.exists() {
         anyhow::bail!("Binary file does not exist: {}", cli.binary);
     }
-
     if !binary_path.is_file() {
         anyhow::bail!("Path is not a file: {}", cli.binary);
     }
 
-    // Extract binary metadata WITHOUT any artificial manipulation
-    // This is the key fix - no string injection, no self-passes
+    // Extract binary metadata (no artificial manipulation)
     log::info!("Analyzing binary format and metadata...");
     let meta = BinaryMeta::from_path(binary_path.clone())?;
 
@@ -94,28 +92,20 @@ async fn main() -> Result<()> {
     }
     println!();
 
-    // Run compliance checks - NO artificial data injection
+    // Run compliance checks
     log::info!("Running Betanet 1.1 §11 compliance verification...");
     let results = run_all_checks(&meta);
 
     // Display results in a table
     let mut table = Table::new();
     table.add_row(row!["Check ID", "Status", "Details"]);
-
     let mut passed = 0;
     let mut failed = 0;
-
     for r in &results {
         let status = if r.pass { "PASS ✓" } else { "FAIL ✗" };
         table.add_row(row![r.id, status, r.details]);
-
-        if r.pass {
-            passed += 1;
-        } else {
-            failed += 1;
-        }
+        if r.pass { passed += 1; } else { failed += 1; }
     }
-
     table.printstd();
 
     // Write compliance report JSON
@@ -125,7 +115,12 @@ async fn main() -> Result<()> {
 
     // Generate enhanced SBOM if requested
     if let Some(sbom_path) = cli.sbom {
-        let format = SbomFormat::Spdx;
+        let format = if cli.sbom_format.eq_ignore_ascii_case("spdx") {
+            SbomFormat::Spdx
+        } else {
+            // Match the enum variant as defined in src/sbom.rs
+            SbomFormat::CycloneDx
+        };
 
         let license_scan_depth = match cli.license_scan.as_str() {
             "comprehensive" => LicenseScanDepth::Comprehensive,
@@ -166,12 +161,11 @@ async fn main() -> Result<()> {
         }
     }
 
-    // Summary and compliance status
+    // Summary and exit code
     println!("\n═══ BETANET 1.1 §11 COMPLIANCE SUMMARY ═══");
     println!("Total checks: {}", results.len());
     println!("Passed: {} ✓", passed);
     println!("Failed: {} ✗", failed);
-
     let compliance_percentage = (passed as f64 / results.len() as f64) * 100.0;
     println!("Compliance rate: {:.1}%", compliance_percentage);
 
@@ -187,16 +181,14 @@ async fn main() -> Result<()> {
     if meta.crypto_components.is_empty() {
         println!("⚠️  No cryptographic components detected - may not support Betanet protocols");
     } else {
-        let quantum_safe_count = meta.crypto_components.iter()
-            .filter(|c| c.quantum_safe)
-            .count();
+        let quantum_safe_count = meta.crypto_components.iter().filter(|c| c.quantum_safe).count();
         println!("🔒 Cryptographic analysis: {}/{} components are quantum-safe",
-                quantum_safe_count, meta.crypto_components.len());
+                 quantum_safe_count, meta.crypto_components.len());
     }
 
     if meta.build_reproducibility.has_build_id {
         println!("🔨 Build reproducibility: {:?} detected",
-                meta.build_reproducibility.build_id_type.as_ref().unwrap_or(&"Unknown".to_string()));
+                 meta.build_reproducibility.build_id_type.as_ref().unwrap_or(&"Unknown".to_string()));
     } else {
         println!("⚠️  No build ID detected - may impact reproducibility verification");
     }

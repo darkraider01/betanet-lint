@@ -1,0 +1,219 @@
+{
+  "compliance_matrix": {
+    "build_integrity": {
+      "compliance_rate": 100.0,
+      "passed": 1,
+      "status": "COMPLIANT",
+      "total": 1
+    },
+    "cryptography": {
+      "compliance_rate": 0.0,
+      "passed": 0,
+      "status": "NON_COMPLIANT",
+      "total": 3
+    },
+    "governance_ledger": {
+      "compliance_rate": 0.0,
+      "passed": 0,
+      "status": "NON_COMPLIANT",
+      "total": 2
+    },
+    "network_protocols": {
+      "compliance_rate": 0.0,
+      "passed": 0,
+      "status": "NON_COMPLIANT",
+      "total": 3
+    },
+    "transport_layer": {
+      "compliance_rate": 25.0,
+      "passed": 1,
+      "status": "NON_COMPLIANT",
+      "total": 4
+    }
+  },
+  "detailed_results": [
+    {
+      "confidence": 0.8999999761581421,
+      "details": "No HTX transport implementation detected. Missing core Betanet protocol layer.",
+      "id": "BN-11.1",
+      "name": "HTX Transport Layer Implementation",
+      "pass": false,
+      "recommendations": [
+        "Implement HTX (Hypertext Transfer eXtension) transport protocol as specified in Betanet 1.1 §11.1"
+      ],
+      "severity": "Critical"
+    },
+    {
+      "confidence": 0.949999988079071,
+      "details": "No access ticket authentication system detected",
+      "id": "BN-11.2",
+      "name": "Access Ticket System",
+      "pass": false,
+      "recommendations": [
+        "Implement negotiated-carrier access ticket system with replay protection"
+      ],
+      "severity": "Critical"
+    },
+    {
+      "confidence": 0.8999999761581421,
+      "details": "No Noise XK handshake protocol implementation detected",
+      "id": "BN-11.3",
+      "name": "Noise XK Handshake Protocol",
+      "pass": false,
+      "recommendations": [
+        "Implement Noise XK handshake with hybrid post-quantum cryptography"
+      ],
+      "severity": "Critical"
+    },
+    {
+      "confidence": 0.949999988079071,
+      "details": "No HTTP emulation layer detected",
+      "id": "BN-11.4",
+      "name": "HTTP/2/3 Emulation Layer",
+      "pass": false,
+      "recommendations": [
+        "Implement HTTP/2/3 protocol emulation for cover traffic"
+      ],
+      "severity": "High"
+    },
+    {
+      "confidence": 0.5,
+      "details": "SCION bridging not detected (optional for non-SCION deployments)",
+      "id": "BN-11.5",
+      "name": "SCION Network Bridging",
+      "pass": true,
+      "recommendations": [],
+      "severity": "Info"
+    },
+    {
+      "confidence": 0.8999999761581421,
+      "details": "Missing required Betanet protocols: /betanet/htx/1.1.0, /betanet/htxquic/1.1.0",
+      "id": "BN-11.6",
+      "name": "Betanet Protocol Transport",
+      "pass": false,
+      "recommendations": [
+        "Implement all required Betanet 1.1 transport protocol identifiers"
+      ],
+      "severity": "Critical"
+    },
+    {
+      "confidence": 0.8999999761581421,
+      "details": "No rotating rendezvous bootstrap mechanism detected",
+      "id": "BN-11.7",
+      "name": "Network Bootstrap Mechanism",
+      "pass": false,
+      "recommendations": [
+        "Implement rotating rendezvous DHT for network bootstrap"
+      ],
+      "severity": "High"
+    },
+    {
+      "confidence": 0.8999999761581421,
+      "details": "No Nym mixnet integration detected",
+      "id": "BN-11.8",
+      "name": "Mixnode Selection Algorithm",
+      "pass": false,
+      "recommendations": [
+        "Integrate with Nym mixnet for traffic anonymization"
+      ],
+      "severity": "High"
+    },
+    {
+      "confidence": 0.949999988079071,
+      "details": "No alias ledger system detected",
+      "id": "BN-11.9",
+      "name": "Alias Ledger System",
+      "pass": false,
+      "recommendations": [
+        "Implement finality-bound 2-of-3 alias ledger with multi-chain support"
+      ],
+      "severity": "High"
+    },
+    {
+      "confidence": 0.8999999761581421,
+      "details": "No Cashu payment system detected",
+      "id": "BN-11.10",
+      "name": "Cashu Payment System",
+      "pass": false,
+      "recommendations": [
+        "Implement Cashu ecash system for micropayments and PoW adverts"
+      ],
+      "severity": "Medium"
+    },
+    {
+      "confidence": 0.8999999761581421,
+      "details": "No network governance system detected",
+      "id": "BN-11.11",
+      "name": "Network Governance System",
+      "pass": false,
+      "recommendations": [
+        "Implement governance system with voting power and concentration caps"
+      ],
+      "severity": "Medium"
+    },
+    {
+      "confidence": 0.8999999761581421,
+      "details": "No anti-correlation fallback mechanisms detected",
+      "id": "BN-11.12",
+      "name": "Anti-Correlation Measures",
+      "pass": false,
+      "recommendations": [
+        "Implement anti-correlation measures with UDP/TCP fallback and cover connections"
+      ],
+      "severity": "High"
+    },
+    {
+      "confidence": 0.800000011920929,
+      "details": "Build integrity verified: Build ID (GNU Build ID), No embedded timestamps, SLSA provenance support, Build attestation | Build ID: \"1efcf708\"",
+      "id": "BN-11.13",
+      "name": "Build Integrity & SLSA Provenance",
+      "pass": true,
+      "recommendations": [],
+      "severity": "Info"
+    }
+  ],
+  "metadata": {
+    "analysis_target": "./target/release/betanet-lint",
+    "spec_section": "§11 Normative Requirements",
+    "spec_version": "Betanet 1.1",
+    "timestamp": "2025-09-13T20:49:18.712526159+00:00",
+    "tool": "betanet-lint",
+    "version": "0.2.0"
+  },
+  "next_steps": [
+    "🚨 URGENT: Address 4 critical compliance failures",
+    "   - BN-11.1: HTX Transport Layer Implementation",
+    "   - BN-11.2: Access Ticket System",
+    "   - BN-11.3: Noise XK Handshake Protocol",
+    "   - BN-11.6: Betanet Protocol Transport",
+    "⚠️  HIGH PRIORITY: Fix 5 high-severity issues",
+    "📚 Review Betanet 1.1 specification Section 11 for detailed requirements",
+    "🔧 Consider using reference implementation or approved libraries",
+    "🧪 Test with official Betanet compliance test suite"
+  ],
+  "recommendations": [
+    "Integrate with Nym mixnet for traffic anonymization",
+    "Implement governance system with voting power and concentration caps",
+    "Upgrade to Noise XK with post-quantum Kyber768 hybrid key exchange",
+    "Implement rotating rendezvous DHT for network bootstrap",
+    "Implement HTX transport layer with proper TLS+ECH support",
+    "Implement negotiated-carrier access ticket system with replay protection",
+    "Implement HTX (Hypertext Transfer eXtension) transport protocol as specified in Betanet 1.1 §11.1",
+    "Add support for /betanet/htx/1.1.0 and /betanet/htxquic/1.1.0 protocols",
+    "Implement finality-bound 2-of-3 alias ledger with multi-chain support",
+    "Implement Cashu ecash system for micropayments and PoW adverts",
+    "Implement anti-correlation measures with UDP/TCP fallback and cover connections",
+    "Implement Noise XK handshake with hybrid post-quantum cryptography",
+    "Implement HTTP/2/3 protocol emulation for cover traffic",
+    "Implement all required Betanet 1.1 transport protocol identifiers"
+  ],
+  "summary": {
+    "compliance_rate": 15.384615384615385,
+    "critical_failures": 4,
+    "failed_checks": 11,
+    "high_severity_failures": 5,
+    "overall_compliance": false,
+    "passed_checks": 2,
+    "total_checks": 13
+  }
+}

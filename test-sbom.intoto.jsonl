@@ -1,0 +1,61 @@
+{
+  "_type": "https://in-toto.io/Statement/v0.1",
+  "predicateType": "https://slsa.dev/provenance/v0.2",
+  "subject": [
+    {
+      "name": "betanet-lint",
+      "digest": {
+        "sha256": "c1e48e2a345a37677279c5afb7ece86641d8e0f827971fe57414f62fe219e077"
+      }
+    }
+  ],
+  "predicate": {
+    "builder": {
+      "id": "https://github.com/darkraider01/betanet-lint",
+      "version": {
+        "version": "0.2.0"
+      },
+      "builderDependencies": [
+        "rustc",
+        "cargo",
+        "betanet-lint"
+      ]
+    },
+    "buildType": "https://github.com/betanet/betanet-lint@v1",
+    "invocation": {
+      "configSource": {
+        "uri": "git+https://github.com/darkraider01/betanet-lint",
+        "digest": {
+          "sha1": "HEAD"
+        },
+        "entryPoint": "src/main.rs"
+      },
+      "parameters": {
+        "target": "release",
+        "features": []
+      },
+      "environment": {}
+    },
+    "materials": [
+      {
+        "uri": "file://./target/release/betanet-lint",
+        "digest": {
+          "sha256": "c1e48e2a345a37677279c5afb7ece86641d8e0f827971fe57414f62fe219e077"
+        }
+      },
+      {
+        "uri": "file://test-sbom.json",
+        "digest": {
+          "sha256": "4f7f94c733011bb3625c15d906cd42683d8dc4fe58e67241dd0aa54496b7b4bd"
+        }
+      }
+    ],
+    "metadata": {
+      "buildInvocationId": "21d6ce40-6496-4cdd-b87f-ca6befa94f0e",
+      "buildStartedOn": "2025-09-13T20:49:18.712830704+00:00",
+      "buildFinishedOn": "2025-09-13T20:49:18.712831275+00:00",
+      "reproducible": false,
+      "hermetic": true
+    }
+  }
+}

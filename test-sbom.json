@@ -1,0 +1,32 @@
+{
+  "bomFormat": "CycloneDX",
+  "components": [
+    {
+      "name": "betanet-lint",
+      "type": "application",
+      "version": "unknown"
+    }
+  ],
+  "metadata": {
+    "properties": [
+      {
+        "name": "slsa.level",
+        "value": "3"
+      },
+      {
+        "name": "sbom.offline_mode",
+        "value": "true"
+      }
+    ],
+    "timestamp": "2025-09-13T20:49:18.712764589+00:00",
+    "tools": [
+      {
+        "name": "betanet-lint",
+        "vendor": "Betanet Team",
+        "version": "0.2.0"
+      }
+    ]
+  },
+  "serialNumber": "urn:uuid:b921fa72-26a7-4f24-a68e-b71efeaf3b35",
+  "specVersion": "1.5"
+}
