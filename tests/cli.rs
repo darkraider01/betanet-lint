@@ -2,18 +2,58 @@ use assert_cmd::prelude::*;
 use std::process::Command;
 use tempfile::tempdir;
 use serde_json;
+use std::path::PathBuf;
+use std::fs;
+
+// Helper function to create and build a simple test binary
+fn create_test_binary() -> (PathBuf, tempfile::TempDir) {
+    let temp_dir = tempdir().unwrap();
+    let project_path = temp_dir.path().join("test_binary_project");
+    fs::create_dir(&project_path).unwrap();
+
+    // Create Cargo.toml
+    let cargo_toml_content = r#"
+[package]
+name = "test_binary"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+"#;
+    fs::write(project_path.join("Cargo.toml"), cargo_toml_content).unwrap();
+
+    // Create src/main.rs
+    let main_rs_content = r#"
+fn main() {
+    println!("Hello, world from test binary!");
+}
+"#;
+    let src_dir = project_path.join("src");
+    fs::create_dir(&src_dir).unwrap();
+    fs::write(src_dir.join("main.rs"), main_rs_content).unwrap();
+
+    // Build the test binary
+    Command::new("cargo")
+        .arg("build")
+        .arg("--release")
+        .current_dir(&project_path)
+        .assert()
+        .success();
+
+    let binary_path = project_path.join("target/release/test_binary");
+    (binary_path, temp_dir)
+}
 
 #[test]
 fn test_cli_basic_functionality() {
     let dir = tempdir().unwrap();
     let report = dir.path().join("report.json");
     
-    // Use the current test binary as the target for analysis
-    let target = std::env::current_exe().unwrap();
+    let (target, _temp_dir) = create_test_binary();
     
     let output = Command::cargo_bin("betanet-lint")
         .unwrap()
-        .arg("--binary").arg(target)
+        .arg("--binary").arg(&target)
         .arg("--report").arg(&report)
         .output()
         .unwrap();
@@ -27,9 +67,8 @@ fn test_cli_basic_functionality() {
             String::from_utf8_lossy(&output.stderr));
     
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("Analyzing binary:"), "stdout should contain 'Analyzing binary:'");
-    assert!(stdout.contains("Wrote report to"), "stdout should contain 'Wrote report to'");
-    assert!(stdout.contains("=== SUMMARY ==="), "stdout should contain summary section");
+    assert!(stdout.contains("📄 Compliance report written to:"), "stdout should contain 'Compliance report written to:'");
+    assert!(stdout.contains("═══ BETANET 1.1 §11 COMPLIANCE SUMMARY ═══"), "stdout should contain summary section");
     
     // Verify report file was created
     assert!(std::fs::metadata(&report).is_ok(), "report file should be created");
@@ -41,14 +80,14 @@ fn test_cli_with_sbom_generation() {
     let report = dir.path().join("report.json");
     let sbom = dir.path().join("sbom.json");
     
-    let target = std::env::current_exe().unwrap();
+    let (target, _temp_dir) = create_test_binary();
     
     let output = Command::cargo_bin("betanet-lint")
         .unwrap()
-        .arg("--binary").arg(target)
+        .arg("--binary").arg(&target)
         .arg("--report").arg(&report)
         .arg("--sbom").arg(&sbom)
-        .arg("--sbom-format").arg("cyclonedx")
+        .arg("--sbom-format").arg("spdx")
         .output()
         .unwrap();
     
@@ -56,7 +95,7 @@ fn test_cli_with_sbom_generation() {
     assert!([0, 2].contains(&code), "unexpected exit code: {}", code);
     
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("Wrote enhanced CYCLONEDX SBOM"), "should mention SBOM generation");
+    assert!(stdout.contains("📋 Enhanced SPDX SBOM written to:"), "should mention SPDX SBOM generation");
     
     // Verify both files were created
     assert!(std::fs::metadata(&report).is_ok(), "report file should exist");
@@ -69,11 +108,11 @@ fn test_cli_enhanced_sbom_features() {
     let report = dir.path().join("report.json");
     let sbom = dir.path().join("enhanced_sbom.json");
     
-    let target = std::env::current_exe().unwrap();
+    let (target, _temp_dir) = create_test_binary();
     
     let output = Command::cargo_bin("betanet-lint")
         .unwrap()
-        .arg("--binary").arg(target)
+        .arg("--binary").arg(&target)
         .arg("--report").arg(&report)
         .arg("--sbom").arg(&sbom)
         .arg("--generate-cbom")
@@ -86,7 +125,7 @@ fn test_cli_enhanced_sbom_features() {
     assert!([0, 2].contains(&code), "unexpected exit code: {}", code);
     
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("Generated Cryptographic BOM") || stdout.contains("Cryptographic components"), 
+    assert!(stdout.contains("✓ Cryptographic BOM generated"),
             "should mention CBOM generation");
     
     // Verify SBOM file exists
@@ -105,11 +144,11 @@ fn test_cli_spdx_format() {
     let report = dir.path().join("report.json");
     let sbom = dir.path().join("sbom_spdx.json");
     
-    let target = std::env::current_exe().unwrap();
+    let (target, _temp_dir) = create_test_binary();
     
     let output = Command::cargo_bin("betanet-lint")
         .unwrap()
-        .arg("--binary").arg(target)
+        .arg("--binary").arg(&target)
         .arg("--report").arg(&report)
         .arg("--sbom").arg(&sbom)
         .arg("--sbom-format").arg("spdx")
@@ -120,7 +159,7 @@ fn test_cli_spdx_format() {
     assert!([0, 2].contains(&code), "unexpected exit code: {}", code);
     
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("Wrote enhanced SPDX SBOM"), "should mention SPDX SBOM generation");
+    assert!(stdout.contains("📋 Enhanced SPDX SBOM written to:"), "should mention SPDX SBOM generation");
     
     assert!(std::fs::metadata(&sbom).is_ok(), "SPDX SBOM file should exist");
 }
@@ -130,7 +169,7 @@ fn test_report_content_validation() {
     let dir = tempdir().unwrap();
     let report = dir.path().join("report.json");
     
-    let target = std::env::current_exe().unwrap();
+    let (target, _temp_dir) = create_test_binary();
     
     let output = Command::cargo_bin("betanet-lint")
         .unwrap()
@@ -148,30 +187,30 @@ fn test_report_content_validation() {
         .expect("report should be valid JSON");
     
     // Validate required fields
-    assert!(report_json.get("binary").is_some(), "report should have binary field");
-    assert!(report_json.get("timestamp").is_some(), "report should have timestamp field");
-    assert!(report_json.get("total_checks").is_some(), "report should have total_checks field");
-    assert!(report_json.get("passed_checks").is_some(), "report should have passed_checks field");
-    assert!(report_json.get("failed_checks").is_some(), "report should have failed_checks field");
-    assert!(report_json.get("overall_compliance").is_some(), "report should have overall_compliance field");
-    assert!(report_json.get("checks").is_some(), "report should have checks array");
+    assert!(report_json.get("metadata").and_then(|m| m.get("analysis_target")).is_some(), "report should have analysis_target field under metadata");
+    assert!(report_json.get("metadata").and_then(|m| m.get("timestamp")).is_some(), "report should have timestamp field under metadata");
+    assert!(report_json.get("summary").and_then(|s| s.get("total_checks")).is_some(), "report should have total_checks field under summary");
+    assert!(report_json.get("summary").and_then(|s| s.get("passed_checks")).is_some(), "report should have passed_checks field under summary");
+    assert!(report_json.get("summary").and_then(|s| s.get("failed_checks")).is_some(), "report should have failed_checks field under summary");
+    assert!(report_json.get("summary").and_then(|s| s.get("overall_compliance")).is_some(), "report should have overall_compliance field under summary");
+    assert!(report_json.get("detailed_results").is_some(), "report should have detailed_results array");
     
     // Validate Betanet 1.1 specific fields
-    if let Some(spec_version) = report_json.get("spec_version") {
+    if let Some(spec_version) = report_json.get("metadata").and_then(|m| m.get("spec_version")) {
         assert_eq!(spec_version.as_str().unwrap(), "Betanet 1.1", "should specify Betanet 1.1");
     }
     
     // Validate check count
-    let total_checks = report_json.get("total_checks").unwrap().as_u64().unwrap();
+    let total_checks = report_json.get("summary").and_then(|s| s.get("total_checks")).unwrap().as_u64().unwrap();
     assert_eq!(total_checks, 13, "should have exactly 13 Betanet 1.1 compliance checks");
     
     // Validate check structure
-    let checks = report_json.get("checks").unwrap().as_array().unwrap();
-    assert_eq!(checks.len(), 13, "checks array should have 13 entries");
+    let checks = report_json.get("detailed_results").unwrap().as_array().unwrap();
+    assert_eq!(checks.len(), 13, "detailed_results array should have 13 entries");
     
     for (i, check) in checks.iter().enumerate() {
         let expected_id = format!("BN-11.{}", i + 1);
-        assert_eq!(check.get("id").unwrap().as_str().unwrap(), expected_id, 
+        assert_eq!(check.get("id").unwrap().as_str().unwrap(), expected_id,
                    "check {} should have correct ID", i);
         assert!(check.get("pass").is_some(), "check should have pass field");
         assert!(check.get("details").is_some(), "check should have details field");
@@ -198,7 +237,7 @@ fn test_cli_error_handling() {
     assert_eq!(output.status.code().unwrap(), 1, "should exit with code 1 for file not found");
     
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("Failed to read binary"), "should show error message");
+    assert!(stderr.contains("Binary file does not exist"), "should show error message");
 }
 
 #[test]
@@ -212,7 +251,7 @@ fn test_cli_help() {
     assert_eq!(output.status.code().unwrap(), 0, "help should exit with code 0");
     
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("Betanet §11 compliance linter"), "help should mention Betanet compliance");
+    assert!(stdout.contains("Verifies that compiled binaries meet the 13 normative requirements specified in Betanet 1.1 §11"), "help should mention Betanet compliance");
     assert!(stdout.contains("--binary"), "help should show binary option");
     assert!(stdout.contains("--report"), "help should show report option");
     assert!(stdout.contains("--sbom"), "help should show SBOM option");
@@ -226,11 +265,11 @@ fn test_vulnerability_scanning_flag() {
     let report = dir.path().join("report.json");
     let sbom = dir.path().join("sbom_with_vulns.json");
     
-    let target = std::env::current_exe().unwrap();
+    let (target, _temp_dir) = create_test_binary();
     
     let output = Command::cargo_bin("betanet-lint")
         .unwrap()
-        .arg("--binary").arg(target)
+        .arg("--binary").arg(&target)
         .arg("--report").arg(&report)
         .arg("--sbom").arg(&sbom)
         .arg("--include-vulns")

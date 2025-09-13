@@ -1,106 +1,300 @@
-name: CI with SLSA Provenance
+name: Secure CI with SLSA Provenance
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, develop ]
   pull_request:
     branches: [ main ]
 
+# Security: Restrict permissions to minimum required
 permissions:
   contents: read
 
 jobs:
+  security-audit:
+    name: Security Audit
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      security-events: write
+
+    steps:
+      # Security: Pin all actions to specific commit SHAs
+      - name: Checkout code
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.1.7
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@21dc36fb71dd22e3317045c0c31a3f4249868b17 # stable
+        with:
+          toolchain: stable
+          components: clippy, rustfmt
+
+      - name: Cache dependencies
+        uses: Swatinem/rust-cache@23bce251a8cd2ffc3c1075eaa2367cf899916d84 # v2.7.3
+        with:
+          key: v1-audit
+
+      - name: Install security audit tools
+        run: |
+          cargo install --locked cargo-audit@0.20.0
+          cargo install --locked cargo-deny@0.14.24
+
+      - name: Security audit
+        run: |
+          echo "Running security audit..."
+          cargo audit --json | tee audit-report.json
+
+      - name: Dependency license check  
+        run: |
+          echo "Checking dependency licenses..."
+          cargo deny check --log-level warn
+
+      - name: Upload security reports
+        uses: actions/upload-artifact@65462800fd760344b1a7b4382951275a0abb4808 # v4.3.3
+        if: always()
+        with:
+          name: security-reports
+          path: |
+            audit-report.json
+            Cargo.lock
+          retention-days: 30
+
   build-test:
+    name: Build and Test
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-        rust: [stable]
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        rust: [stable, beta]
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: windows-latest  
+            target: x86_64-pc-windows-msvc
+          - os: macos-latest
+            target: x86_64-apple-darwin
+
     runs-on: ${{ matrix.os }}
-    
+
     permissions:
       contents: read
-      
+
     steps:
-    - name: Checkout
-      uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.1.7
 
-    - name: Set up Rust
-      uses: dtolnay/rust-toolchain@master
-      with:
-        toolchain: ${{ matrix.rust }}
-        components: clippy
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@21dc36fb71dd22e3317045c0c31a3f4249868b17 # stable
+        with:
+          toolchain: ${{ matrix.rust }}
+          targets: ${{ matrix.target }}
+          components: clippy, rustfmt
 
-    - name: Cache cargo
-      uses: Swatinem/rust-cache@23bce251a8cd2ffc3c1075eaa2367cf899916d84 # v2.7.3
+      - name: Cache dependencies
+        uses: Swatinem/rust-cache@23bce251a8cd2ffc3c1075eaa2367cf899916d84 # v2.7.3
+        with:
+          key: v1-${{ matrix.os }}-${{ matrix.rust }}
 
-    - name: Security audit
-      run: |
-        cargo install --locked cargo-audit
-        cargo audit
+      - name: Check code formatting
+        run: cargo fmt --all -- --check
 
-    - name: Check dependencies
-      run: |
-        cargo install --locked cargo-deny
-        cargo deny check
+      - name: Static analysis with Clippy
+        run: |
+          cargo clippy --all-targets --all-features -- -D warnings -D clippy::all
 
-    - name: Build
-      run: cargo build --all --locked --verbose
+      - name: Build with security flags
+        env:
+          RUSTFLAGS: "-D warnings -C target-feature=+crt-static"
+          SOURCE_DATE_EPOCH: ${{ github.event.repository.updated_at }}
+        run: |
+          cargo build --release --locked --target ${{ matrix.target }}
 
-    - name: Clippy
-      run: cargo clippy --all-targets -- -D warnings
+      - name: Run comprehensive tests
+        env:
+          RUST_BACKTRACE: 1
+        run: |
+          cargo test --all --locked --verbose
+          cargo test --release --all --locked --verbose
 
-    - name: Tests
-      run: cargo test --all --locked --verbose
-      
-    - name: Reproducible build verification
-      if: matrix.os == 'ubuntu-latest'
-      run: |
-        # Build twice and compare
-        cargo clean
-        export SOURCE_DATE_EPOCH=$(git log -1 --pretty=%ct)
-        cargo build --release
-        cp target/release/betanet-lint build1
-        cargo clean
-        export SOURCE_DATE_EPOCH=$(git log -1 --pretty=%ct)
-        cargo build --release
-        cp target/release/betanet-lint build2
-        if cmp -s build1 build2; then
-          echo "✓ Reproducible build verified"
-        else
-          echo "✗ Build is not reproducible"
-          exit 1
-        fi
+      - name: Integration tests
+        if: matrix.os == 'ubuntu-latest' && matrix.rust == 'stable'
+        run: |
+          # Test the built binary
+          ./target/${{ matrix.target }}/release/betanet-lint --help
 
-  provenance:
-    needs: [build-test]
+          # Create test fixture and run compliance check
+          echo 'int main(){return 0;}' > test.c
+          gcc test.c -o test_binary
+          ./target/${{ matrix.target }}/release/betanet-lint \
+            --binary ./test_binary \
+            --report test_report.json \
+            --offline
+
+          # Verify report was generated
+          test -f test_report.json
+          echo "✓ Integration test passed"
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@65462800fd760344b1a7b4382951275a0abb4808 # v4.3.3
+        if: matrix.rust == 'stable'
+        with:
+          name: betanet-lint-${{ matrix.os }}-${{ matrix.target }}
+          path: |
+            target/${{ matrix.target }}/release/betanet-lint*
+            test_report.json
+          retention-days: 30
+
+  reproducible-build:
+    name: Reproducible Build Verification
+    runs-on: ubuntu-latest
+    needs: [security-audit]
+
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.1.7
+
+      - name: Setup Rust toolchain  
+        uses: dtolnay/rust-toolchain@21dc36fb71dd22e3317045c0c31a3f4249868b17 # stable
+        with:
+          toolchain: stable
+
+      - name: Cache dependencies
+        uses: Swatinem/rust-cache@23bce251a8cd2ffc3c1075eaa2367cf899916d84 # v2.7.3
+        with:
+          key: v1-reproducible
+
+      - name: Reproducible build verification
+        env:
+          SOURCE_DATE_EPOCH: 1234567890
+          RUSTFLAGS: "-C target-feature=+crt-static"
+        run: |
+          echo "Testing build reproducibility..."
+
+          # First build
+          cargo clean
+          cargo build --release --locked
+          cp target/release/betanet-lint build1
+          sha256sum build1 > hash1.txt
+
+          # Second build
+          cargo clean  
+          cargo build --release --locked
+          cp target/release/betanet-lint build2
+          sha256sum build2 > hash2.txt
+
+          # Compare builds
+          if cmp -s build1 build2; then
+            echo "✅ Build is reproducible"
+            echo "Hash: $(cat hash1.txt)"
+          else
+            echo "❌ Build is not reproducible"
+            echo "Hash 1: $(cat hash1.txt)"
+            echo "Hash 2: $(cat hash2.txt)"
+            exit 1
+          fi
+
+  slsa-provenance:
+    name: SLSA Level 3 Provenance
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    
+    needs: [build-test, reproducible-build]
+
     permissions:
       contents: read
       actions: read
       id-token: write
       attestations: write
-      
+
+    outputs:
+      binary-digest: ${{ steps.binary-hash.outputs.digest }}
+
     steps:
-    - name: Checkout
-      uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.1.7
+        with:
+          fetch-depth: 0 # Need full history for provenance
 
-    - name: Set up Rust
-      uses: dtolnay/rust-toolchain@master
-      with:
-        toolchain: stable
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@21dc36fb71dd22e3317045c0c31a3f4249868b17 # stable
+        with:
+          toolchain: stable
 
-    - name: Build release binary
-      run: |
-        export SOURCE_DATE_EPOCH=$(git log -1 --pretty=%ct)
-        cargo build --release --locked
+      - name: Build release binary with provenance
+        env:
+          SOURCE_DATE_EPOCH: ${{ github.event.repository.updated_at }}
+          RUSTFLAGS: "-C target-feature=+crt-static"
+        run: |
+          cargo build --release --locked
 
-    - name: Upload binary and provenance
-      uses: actions/upload-artifact@65462800fd760344b1a7b4382951275a0abb4808 # v4.3.3
-      with:
-        name: betanet-lint-release
-        path: |
-          target/release/betanet-lint
-        retention-days: 30
+      - name: Generate binary hash
+        id: binary-hash
+        run: |
+          DIGEST=$(sha256sum target/release/betanet-lint | cut -d' ' -f1)
+          echo "digest=$DIGEST" >> $GITHUB_OUTPUT
+          echo "Binary SHA256: $DIGEST"
+
+      - name: Generate build provenance
+        uses: actions/attest-build-provenance@1c608d11d69870c2092266b3f9a6f3abbf17002c # v1.4.3
+        with:
+          subject-name: betanet-lint
+          subject-digest: sha256:${{ steps.binary-hash.outputs.digest }}
+
+      - name: Generate SBOM with provenance
+        run: |
+          ./target/release/betanet-lint \
+            --binary ./target/release/betanet-lint \
+            --report compliance_report.json \
+            --sbom compliance_sbom.json \
+            --slsa-level 3 \
+            --generate-cbom \
+            --offline
+
+      - name: Attest SBOM
+        uses: actions/attest-sbom@7837ac6216b2b3ded96bb9bb0c971e75c8f6acc1 # v1.4.1
+        with:
+          subject-name: betanet-lint
+          subject-digest: sha256:${{ steps.binary-hash.outputs.digest }}
+          sbom-path: compliance_sbom.json
+
+      - name: Upload release artifacts with attestations
+        uses: actions/upload-artifact@65462800fd760344b1a7b4382951275a0abb4808 # v4.3.3
+        with:
+          name: betanet-lint-release-with-provenance
+          path: |
+            target/release/betanet-lint
+            compliance_report.json
+            compliance_sbom.json
+            *.intoto.jsonl
+          retention-days: 90
+
+  security-scorecard:
+    name: OSSF Security Scorecard
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      security-events: write
+      id-token: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.1.7
+        with:
+          persist-credentials: false
+
+      - name: Run OSSF Scorecard
+        uses: ossf/scorecard-action@62b2cac7ed8198b15735ed49ab1e5cf35480ba46 # v2.4.0
+        with:
+          results_file: scorecard-results.sarif
+          results_format: sarif
+          publish_results: true
+
+      - name: Upload SARIF results
+        uses: github/codeql-action/upload-sarif@afb54ba388a7dca6ecae48f608c4ff05ff4cc77a # v3.25.15
+        with:
+          sarif_file: scorecard-results.sarif

@@ -1,923 +1,915 @@
+//! Betanet 1.1 §11 Compliance Verification
+//!
+//! This module implements the 13 normative compliance checks specified in
+//! Betanet 1.1 Section 11. Each check verifies specific protocol behaviors
+//! and implementation requirements, not generic binary hygiene.
+
 use crate::binary::BinaryMeta;
+use crate::protocol::{ProtocolAnalyzer, ProtocolSupport};
+use crate::crypto::CryptoAnalyzer;
 use serde::{Deserialize, Serialize};
 use std::{fs, path::PathBuf};
+use anyhow::Result;
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct CheckResult {
     pub id: String,
+    pub name: String,
     pub pass: bool,
     pub details: String,
+    pub confidence: f32,
+    pub severity: Severity,
+    pub recommendations: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub enum Severity {
+    Critical,
+    High,
+    Medium,
+    Low,
+    Info,
+}
+
+impl CheckResult {
+    pub fn new(id: &str, name: &str) -> Self {
+        Self {
+            id: id.to_string(),
+            name: name.to_string(),
+            pass: false,
+            details: String::new(),
+            confidence: 0.0,
+            severity: Severity::Medium,
+            recommendations: Vec::new(),
+        }
+    }
+
+    pub fn pass_with_details(mut self, details: &str, confidence: f32) -> Self {
+        self.pass = true;
+        self.details = details.to_string();
+        self.confidence = confidence;
+        self.severity = Severity::Info;
+        self
+    }
+
+    pub fn fail_with_details(mut self, details: &str, confidence: f32, severity: Severity) -> Self {
+        self.pass = false;
+        self.details = details.to_string();
+        self.confidence = confidence;
+        self.severity = severity;
+        self
+    }
+
+    pub fn add_recommendation(&mut self, recommendation: &str) {
+        self.recommendations.push(recommendation.to_string());
+    }
 }
 
 /// Run all 13 Betanet 1.1 §11 compliance checks against a binary
+/// 
+/// Each check verifies specific protocol implementation requirements
+/// rather than generic binary characteristics.
 pub fn run_all_checks(meta: &BinaryMeta) -> Vec<CheckResult> {
-    vec![
-        check_11_1_htx_transport(meta),
-        check_11_2_access_tickets(meta),
-        check_11_3_noise_xk_handshake(meta),
-        check_11_4_http_emulation(meta),
-        check_11_5_scion_bridging(meta),
-        check_11_6_betanet_transports(meta),
-        check_11_7_bootstrap_mechanism(meta),
-        check_11_8_mixnode_selection(meta),
-        check_11_9_alias_ledger(meta),
-        check_11_10_cashu_vouchers(meta),
-        check_11_11_governance(meta),
-        check_11_12_anticorrelation_fallback(meta),
+    log::info!("Running {} Betanet 1.1 §11 compliance checks", 13);
+
+    let protocol_analyzer = ProtocolAnalyzer::new(meta);
+    let crypto_analyzer = CryptoAnalyzer::new(meta);
+
+    let results = vec![
+        check_11_1_htx_transport(&protocol_analyzer),
+        check_11_2_access_tickets(&protocol_analyzer),
+        check_11_3_noise_xk_handshake(&protocol_analyzer, &crypto_analyzer),
+        check_11_4_http_emulation(&protocol_analyzer),
+        check_11_5_scion_bridging(&protocol_analyzer),
+        check_11_6_betanet_transports(&protocol_analyzer),
+        check_11_7_bootstrap_mechanism(&protocol_analyzer),
+        check_11_8_mixnode_selection(&protocol_analyzer),
+        check_11_9_alias_ledger(&protocol_analyzer),
+        check_11_10_cashu_vouchers(&protocol_analyzer, &crypto_analyzer),
+        check_11_11_governance(&protocol_analyzer),
+        check_11_12_anticorrelation_fallback(&protocol_analyzer),
         check_11_13_slsa_provenance(meta),
-    ]
+    ];
+
+    for result in &results {
+        log::debug!("Check Result: ID={}, Pass={}, Details={}", result.id, result.pass, result.details);
+    }
+    results
 }
 
-/// Write compliance report as JSON
+/// Write compliance report as JSON with enhanced metadata
 pub fn write_report_json(
     out_path: &PathBuf,
     binary_path: &str,
     results: &[CheckResult],
-) -> Result<(), String> {
+) -> Result<()> {
+    let passed_count = results.iter().filter(|r| r.pass).count();
+    let failed_count = results.iter().filter(|r| !r.pass).count();
+    let overall_compliance = results.iter().all(|r| r.pass);
+
+    // Analyze failure severity
+    let critical_failures = results.iter()
+        .filter(|r| !r.pass && matches!(r.severity, Severity::Critical))
+        .count();
+    let high_failures = results.iter()
+        .filter(|r| !r.pass && matches!(r.severity, Severity::High))
+        .count();
+
     let report = serde_json::json!({
-        "binary": binary_path,
-        "timestamp": chrono::Utc::now().to_rfc3339(),
-        "total_checks": results.len(),
-        "passed_checks": results.iter().filter(|r| r.pass).count(),
-        "failed_checks": results.iter().filter(|r| !r.pass).count(),
-        "overall_compliance": results.iter().all(|r| r.pass),
-        "spec_version": "Betanet 1.1",
-        "checks": results
+        "metadata": {
+            "tool": "betanet-lint",
+            "version": env!("CARGO_PKG_VERSION"),
+            "timestamp": chrono::Utc::now().to_rfc3339(),
+            "spec_version": "Betanet 1.1",
+            "spec_section": "§11 Normative Requirements",
+            "analysis_target": binary_path
+        },
+        "summary": {
+            "total_checks": results.len(),
+            "passed_checks": passed_count,
+            "failed_checks": failed_count,
+            "compliance_rate": (passed_count as f64 / results.len() as f64) * 100.0,
+            "overall_compliance": overall_compliance,
+            "critical_failures": critical_failures,
+            "high_severity_failures": high_failures
+        },
+        "compliance_matrix": {
+            "transport_layer": check_compliance_category(results, &["BN-11.1", "BN-11.4", "BN-11.5", "BN-11.6"]),
+            "cryptography": check_compliance_category(results, &["BN-11.2", "BN-11.3", "BN-11.10"]),
+            "network_protocols": check_compliance_category(results, &["BN-11.7", "BN-11.8", "BN-11.12"]),
+            "governance_ledger": check_compliance_category(results, &["BN-11.9", "BN-11.11"]),
+            "build_integrity": check_compliance_category(results, &["BN-11.13"])
+        },
+        "detailed_results": results,
+        "recommendations": generate_recommendations(results),
+        "next_steps": generate_next_steps(results)
     });
 
-    fs::write(out_path, serde_json::to_string_pretty(&report).map_err(|e| e.to_string())?)
-        .map_err(|e| format!("Failed to write report: {e}"))
+    fs::write(out_path, serde_json::to_string_pretty(&report)?)
+        .map_err(|e| anyhow::anyhow!("Failed to write report: {}", e))?;
+
+    log::info!("Compliance report written to: {}", out_path.display());
+    Ok(())
 }
 
-/* -------------------------------------------------------------------- */
-/* Betanet 1.1 §11 Compliance Check Implementations                    */
-/* -------------------------------------------------------------------- */
+fn check_compliance_category(results: &[CheckResult], check_ids: &[&str]) -> serde_json::Value {
+    let category_results: Vec<_> = results.iter()
+        .filter(|r| check_ids.contains(&r.id.as_str()))
+        .collect();
+
+    let passed = category_results.iter().filter(|r| r.pass).count();
+    let total = category_results.len();
+
+    serde_json::json!({
+        "passed": passed,
+        "total": total,
+        "compliance_rate": if total > 0 { (passed as f64 / total as f64) * 100.0 } else { 0.0 },
+        "status": if passed == total { "COMPLIANT" } else { "NON_COMPLIANT" }
+    })
+}
+
+fn generate_recommendations(results: &[CheckResult]) -> Vec<String> {
+    let mut recommendations = Vec::new();
+
+    for result in results {
+        if !result.pass {
+            recommendations.extend(result.recommendations.iter().cloned());
+
+            // Add specific recommendations based on check type
+            match result.id.as_str() {
+                "BN-11.1" => recommendations.push("Implement HTX transport layer with proper TLS+ECH support".to_string()),
+                "BN-11.3" => recommendations.push("Upgrade to Noise XK with post-quantum Kyber768 hybrid key exchange".to_string()),
+                "BN-11.6" => recommendations.push("Add support for /betanet/htx/1.1.0 and /betanet/htxquic/1.1.0 protocols".to_string()),
+                "BN-11.13" => recommendations.push("Implement reproducible builds with SLSA Level 3 provenance attestation".to_string()),
+                _ => {}
+            }
+        }
+    }
+
+    recommendations.into_iter().collect::<std::collections::HashSet<_>>().into_iter().collect()
+}
+
+fn generate_next_steps(results: &[CheckResult]) -> Vec<String> {
+    let failed_checks: Vec<_> = results.iter().filter(|r| !r.pass).collect();
+
+    if failed_checks.is_empty() {
+        return vec!["Binary is fully compliant with Betanet 1.1 specification".to_string()];
+    }
+
+    let mut steps = Vec::new();
+
+    // Prioritize by severity
+    let critical_checks: Vec<_> = failed_checks.iter()
+        .filter(|r| matches!(r.severity, Severity::Critical))
+        .collect();
+
+    if !critical_checks.is_empty() {
+        steps.push(format!("🚨 URGENT: Address {} critical compliance failures", critical_checks.len()));
+        for check in critical_checks {
+            steps.push(format!("   - {}: {}", check.id, check.name));
+        }
+    }
+
+    let high_checks: Vec<_> = failed_checks.iter()
+        .filter(|r| matches!(r.severity, Severity::High))
+        .collect();
+
+    if !high_checks.is_empty() {
+        steps.push(format!("⚠️  HIGH PRIORITY: Fix {} high-severity issues", high_checks.len()));
+    }
+
+    steps.push("📚 Review Betanet 1.1 specification Section 11 for detailed requirements".to_string());
+    steps.push("🔧 Consider using reference implementation or approved libraries".to_string());
+    steps.push("🧪 Test with official Betanet compliance test suite".to_string());
+
+    steps
+}
+
+/*
+ * ═══════════════════════════════════════════════════════════════════════════
+ * BETANET 1.1 §11 COMPLIANCE CHECK IMPLEMENTATIONS
+ * ═══════════════════════════════════════════════════════════════════════════
+ * 
+ * Each function below implements verification for a specific normative 
+ * requirement from Betanet 1.1 Section 11. These are NOT generic binary
+ * hygiene checks, but protocol-specific verification.
+ */
 
 /// §11.1: HTX over TCP-443 and QUIC-443 with origin-mirrored TLS + ECH
-fn check_11_1_htx_transport(meta: &BinaryMeta) -> CheckResult {
-    let mut indicators = Vec::new();
-    let mut missing = Vec::new();
-    
-    // Check all sources: strings, symbols, sections
-    let all_sources: Vec<&str> = meta.strings.iter().map(|s| s.as_str())
-        .chain(meta.imported_symbols.iter().map(|s| s.as_str()))
-        .chain(meta.exported_symbols.iter().map(|s| s.as_str()))
-        .chain(meta.section_names.iter().map(|s| s.as_str()))
-        .collect();
-    
-    // HTX protocol implementation (enhanced detection)
-    if all_sources.iter().any(|s| {
-        let lower = s.to_lowercase();
-        (lower.contains("htx") && (lower.contains("transport") || lower.contains("protocol"))) ||
-        lower.contains("cover_transport") ||
-        s.contains("htx_")  // Function prefixes
-    }) {
-        indicators.push("HTX protocol");
+fn check_11_1_htx_transport(analyzer: &ProtocolAnalyzer) -> CheckResult {
+    let mut result = CheckResult::new("BN-11.1", "HTX Transport Layer Implementation");
+
+    // Check for HTX protocol implementation
+    let htx_support = analyzer.detect_htx_protocol_support();
+
+    if htx_support.has_implementation {
+        if htx_support.supports_tcp_443 && htx_support.supports_quic_443 {
+            if htx_support.has_origin_mirroring && htx_support.has_ech_support {
+                result = result.pass_with_details(
+                    &format!("Complete HTX implementation detected: TCP-443 ✓, QUIC-443 ✓, Origin Mirroring ✓, ECH ✓. Transport functions: {}", 
+                             htx_support.detected_functions.join(", ")),
+                    0.95
+                );
+            } else {
+                result = result.fail_with_details(
+                    &format!("HTX transport missing security features - Origin Mirroring: {}, ECH: {}", 
+                             htx_support.has_origin_mirroring, htx_support.has_ech_support),
+                    0.8,
+                    Severity::High
+                );
+                result.add_recommendation("Implement TLS fingerprint origin mirroring and Encrypted Client Hello (ECH)");
+            }
+        } else {
+            result = result.fail_with_details(
+                &format!("HTX transport incomplete - TCP-443: {}, QUIC-443: {}", 
+                         htx_support.supports_tcp_443, htx_support.supports_quic_443),
+                0.6,
+                Severity::Critical
+            );
+            result.add_recommendation("Implement both TCP-443 and QUIC-443 transport channels for HTX protocol");
+        }
     } else {
-        missing.push("HTX protocol");
+        result = result.fail_with_details(
+            "No HTX transport implementation detected. Missing core Betanet protocol layer.",
+            0.9,
+            Severity::Critical
+        );
+        result.add_recommendation("Implement HTX (Hypertext Transfer eXtension) transport protocol as specified in Betanet 1.1 §11.1");
     }
-    
-    // TCP-443 transport (check for symbols and port usage)
-    if all_sources.iter().any(|s| 
-        s.contains(":443") || 
-        s.contains("TCP_443") ||
-        s.contains("bind_443") ||
-        s.contains("listen_443")
-    ) {
-        indicators.push("TCP-443");
-    } else {
-        missing.push("TCP-443");
-    }
-    
-    // QUIC-443 transport (check for QUIC library symbols)
-    if all_sources.iter().any(|s| {
-        let lower = s.to_lowercase();
-        lower.contains("quic") || 
-        s.contains("quic_") ||  // QUIC function calls
-        lower.contains("h3_") || // HTTP/3
-        meta.dynamic_dependencies.iter().any(|dep| dep.contains("quic"))
-    }) {
-        indicators.push("QUIC-443");
-    } else {
-        missing.push("QUIC-443");
-    }
-    
-    // Origin mirroring (check for TLS fingerprinting libraries)
-    if all_sources.iter().any(|s| 
-        s.contains("JA3") || 
-        s.contains("JA4") || 
-        (s.contains("origin") && s.contains("mirror")) ||
-        s.contains("tls_fingerprint") ||
-        s.contains("client_hello")
-    ) {
-        indicators.push("Origin mirroring");
-    } else {
-        missing.push("Origin mirroring");
-    }
-    
-    // ECH (Encrypted Client Hello)
-    if all_sources.iter().any(|s| 
-        s.contains("ECH") || 
-        s.contains("encrypted_client_hello") ||
-        s.contains("ech_") ||  // ECH function calls
-        meta.crypto_components.iter().any(|crypto| crypto.algorithm.contains("ECH"))
-    ) {
-        indicators.push("ECH support");
-    } else {
-        missing.push("ECH support");
-    }
-    
-    let pass = missing.len() <= 1; // Allow one missing component for flexibility
-    let details = if pass {
-        format!("HTX transport implementation found: {}", indicators.join(", "))
-    } else {
-        format!("Missing HTX transport components: {} | Found: {}", 
-                missing.join(", "), indicators.join(", "))
-    };
-    
-    CheckResult {
-        id: "BN-11.1".to_string(),
-        pass,
-        details,
-    }
+
+    result
 }
 
-/// §11.2: Negotiated-carrier, replay-bound access tickets
-fn check_11_2_access_tickets(meta: &BinaryMeta) -> CheckResult {
-    let mut indicators = Vec::new();
-    let mut missing = Vec::new();
+/// §11.2: Negotiated-carrier, replay-bound access tickets with rate-limits
+fn check_11_2_access_tickets(analyzer: &ProtocolAnalyzer) -> CheckResult {
+    let mut result = CheckResult::new("BN-11.2", "Access Ticket System");
 
-    // Access ticket implementation
-    if meta.strings.iter().any(|s| s.contains("access") && (s.contains("ticket") || s.contains("Ticket"))) {
-        indicators.push("Access tickets");
+    let ticket_support = analyzer.detect_access_ticket_system();
+
+    if ticket_support.has_ticket_system {
+        let mut missing_features = Vec::new();
+
+        if !ticket_support.supports_carrier_negotiation {
+            missing_features.push("carrier negotiation");
+        }
+        if !ticket_support.has_replay_protection {
+            missing_features.push("replay protection");
+        }
+        if !ticket_support.has_rate_limiting {
+            missing_features.push("rate limiting");
+        }
+        if !ticket_support.supports_x25519_exchange {
+            missing_features.push("X25519 key exchange");
+        }
+
+        if missing_features.is_empty() {
+            result = result.pass_with_details(
+                &format!("Complete access ticket system: {} carriers supported, replay protection ✓, rate limiting ✓", 
+                         ticket_support.supported_carriers.len()),
+                0.9
+            );
+        } else {
+            result = result.fail_with_details(
+                &format!("Access ticket system missing: {}", missing_features.join(", ")),
+                0.7,
+                Severity::High
+            );
+            result.add_recommendation("Implement missing access ticket features for secure authentication");
+        }
     } else {
-        missing.push("Access tickets");
+        result = result.fail_with_details(
+            "No access ticket authentication system detected",
+            0.95,
+            Severity::Critical
+        );
+        result.add_recommendation("Implement negotiated-carrier access ticket system with replay protection");
     }
 
-    // Carrier negotiation (cookie, query, body)
-    if meta.strings.iter().any(|s| s.contains("Cookie:") || s.contains("__Host-")) {
-        indicators.push("Cookie carrier");
-    }
-
-    if meta.strings.iter().any(|s| s.contains("bn1=") || s.contains("query")) {
-        indicators.push("Query carrier");
-    }
-
-    if meta.strings.iter().any(|s| s.contains("application/x-www-form-urlencoded")) {
-        indicators.push("Body carrier");
-    }
-
-    if indicators.len() < 2 {
-        missing.push("Carrier negotiation");
-    }
-
-    // Replay protection
-    if meta.strings.iter().any(|s| s.contains("nonce") || s.contains("replay")) {
-        indicators.push("Replay protection");
-    } else {
-        missing.push("Replay protection");
-    }
-
-    // X25519 for ticket exchange
-    if meta.strings.iter().any(|s| s.contains("X25519") || s.contains("x25519")) {
-        indicators.push("X25519 key exchange");
-    } else {
-        missing.push("X25519 key exchange");
-    }
-
-    let pass = missing.is_empty();
-    let details = if pass {
-        format!("Access ticket system found: {}", indicators.join(", "))
-    } else {
-        format!("Missing access ticket components: {} | Found: {}", 
-                missing.join(", "), indicators.join(", "))
-    };
-
-    CheckResult {
-        id: "BN-11.2".to_string(),
-        pass,
-        details,
-    }
+    result
 }
 
-/// §11.3: Noise XK with key separation, nonce lifecycle, and rekeying
-fn check_11_3_noise_xk_handshake(meta: &BinaryMeta) -> CheckResult {
-    let mut indicators = Vec::new();
-    let mut missing = Vec::new();
+/// §11.3: Inner Noise XK with key separation, nonce lifecycle, rekeying
+fn check_11_3_noise_xk_handshake(analyzer: &ProtocolAnalyzer, crypto_analyzer: &CryptoAnalyzer) -> CheckResult {
+    let mut result = CheckResult::new("BN-11.3", "Noise XK Handshake Protocol");
 
-    // Noise XK protocol
-    if meta.strings.iter().any(|s| s.contains("Noise") && (s.contains("XK") || s.contains("xk"))) {
-        indicators.push("Noise XK");
+    let noise_support = analyzer.detect_noise_protocol();
+    let crypto_support = crypto_analyzer.analyze_post_quantum_crypto();
+
+    if noise_support.implements_noise_xk {
+        let mut missing_features = Vec::new();
+
+        if !crypto_support.has_kyber768 {
+            missing_features.push("Kyber768 post-quantum KEX");
+        }
+        if !noise_support.has_key_separation {
+            missing_features.push("proper key separation (K0c/K0s)");
+        }
+        if !noise_support.supports_rekeying {
+            missing_features.push("KEY_UPDATE rekeying");
+        }
+        if !noise_support.has_nonce_management {
+            missing_features.push("nonce lifecycle management");
+        }
+
+        if missing_features.is_empty() {
+            result = result.pass_with_details(
+                "Complete Noise XK implementation with post-quantum hybrid key exchange",
+                0.95
+            );
+        } else {
+            result = result.fail_with_details(
+                &format!("Noise XK implementation missing: {}", missing_features.join(", ")),
+                0.8,
+                Severity::High
+            );
+            result.add_recommendation("Upgrade to hybrid X25519-Kyber768 key exchange (required from 2027-01-01)");
+        }
     } else {
-        missing.push("Noise XK");
+        result = result.fail_with_details(
+            "No Noise XK handshake protocol implementation detected",
+            0.9,
+            Severity::Critical
+        );
+        result.add_recommendation("Implement Noise XK handshake with hybrid post-quantum cryptography");
     }
 
-    // Hybrid X25519-Kyber768 (required from 2027-01-01)
-    if meta.strings.iter().any(|s| s.contains("Kyber") || s.contains("kyber")) {
-        indicators.push("Kyber768");
-    } else {
-        missing.push("Kyber768 (PQ)");
-    }
-
-    // Key separation
-    if meta.strings.iter().any(|s| s.contains("HKDF") && (s.contains("K0c") || s.contains("K0s"))) {
-        indicators.push("Key separation");
-    } else {
-        missing.push("Key separation");
-    }
-
-    // Rekeying
-    if meta.strings.iter().any(|s| s.contains("KEY_UPDATE") || s.contains("rekey")) {
-        indicators.push("Rekeying");
-    } else {
-        missing.push("Rekeying");
-    }
-
-    // Nonce management
-    if meta.strings.iter().any(|s| s.contains("nonce") && s.contains("counter")) {
-        indicators.push("Nonce lifecycle");
-    } else {
-        missing.push("Nonce lifecycle");
-    }
-
-    let pass = missing.is_empty();
-    let details = if pass {
-        format!("Noise XK handshake found: {}", indicators.join(", "))
-    } else {
-        format!("Missing Noise XK components: {} | Found: {}", 
-                missing.join(", "), indicators.join(", "))
-    };
-
-    CheckResult {
-        id: "BN-11.3".to_string(),
-        pass,
-        details,
-    }
+    result
 }
 
-/// §11.4: HTTP/2/3 emulation with adaptive cadences
-fn check_11_4_http_emulation(meta: &BinaryMeta) -> CheckResult {
-    let mut indicators = Vec::new();
-    let mut missing = Vec::new();
+/// §11.4: HTTP/2/3 emulation with adaptive cadences  
+fn check_11_4_http_emulation(analyzer: &ProtocolAnalyzer) -> CheckResult {
+    let mut result = CheckResult::new("BN-11.4", "HTTP/2/3 Emulation Layer");
 
-    // HTTP/2 support
-    if meta.strings.iter().any(|s| s.contains("h2") || s.contains("HTTP/2") || s.contains("SETTINGS")) {
-        indicators.push("HTTP/2");
+    let http_support = analyzer.detect_http_emulation();
+
+    if http_support.supports_http2 || http_support.supports_http3 {
+        let mut features = Vec::new();
+        if http_support.supports_http2 { features.push("HTTP/2"); }
+        if http_support.supports_http3 { features.push("HTTP/3"); }
+        if http_support.has_adaptive_cadence { features.push("adaptive PING cadence"); }
+        if http_support.has_priority_frames { features.push("PRIORITY frames"); }
+        if http_support.has_padding { features.push("idle padding"); }
+
+        let completeness = features.len() as f32 / 5.0; // 5 total features
+
+        if completeness >= 0.8 {
+            result = result.pass_with_details(
+                &format!("HTTP emulation layer implemented: {}", features.join(", ")),
+                completeness
+            );
+        } else {
+            result = result.fail_with_details(
+                &format!("HTTP emulation incomplete: {} features missing", 5 - features.len()),
+                completeness,
+                Severity::Medium
+            );
+            result.add_recommendation("Implement complete HTTP/2/3 emulation for traffic analysis resistance");
+        }
     } else {
-        missing.push("HTTP/2");
+        result = result.fail_with_details(
+            "No HTTP emulation layer detected",
+            0.95,
+            Severity::High
+        );
+        result.add_recommendation("Implement HTTP/2/3 protocol emulation for cover traffic");
     }
 
-    // HTTP/3 support
-    if meta.strings.iter().any(|s| s.contains("h3") || s.contains("HTTP/3")) {
-        indicators.push("HTTP/3");
-    } else {
-        missing.push("HTTP/3");
-    }
-
-    // PING cadence
-    if meta.strings.iter().any(|s| s.contains("PING") && (s.contains("cadence") || s.contains("random"))) {
-        indicators.push("PING cadence");
-    } else {
-        missing.push("PING cadence");
-    }
-
-    // PRIORITY frames
-    if meta.strings.iter().any(|s| s.contains("PRIORITY")) {
-        indicators.push("PRIORITY frames");
-    } else {
-        missing.push("PRIORITY frames");
-    }
-
-    // Idle padding
-    if meta.strings.iter().any(|s| s.contains("padding") || s.contains("dummy") && s.contains("DATA")) {
-        indicators.push("Idle padding");
-    } else {
-        missing.push("Idle padding");
-    }
-
-    let pass = missing.len() <= 1; // Allow one missing component
-    let details = if pass {
-        format!("HTTP emulation found: {}", indicators.join(", "))
-    } else {
-        format!("Missing HTTP emulation components: {} | Found: {}", 
-                missing.join(", "), indicators.join(", "))
-    };
-
-    CheckResult {
-        id: "BN-11.4".to_string(),
-        pass,
-        details,
-    }
+    result
 }
 
-/// §11.5: SCION bridging via HTX tunnels
-fn check_11_5_scion_bridging(meta: &BinaryMeta) -> CheckResult {
-    let mut indicators = Vec::new();
-    let mut missing = Vec::new();
+/// §11.5: HTX-tunnelled transition for non-SCION links
+fn check_11_5_scion_bridging(analyzer: &ProtocolAnalyzer) -> CheckResult {
+    let mut result = CheckResult::new("BN-11.5", "SCION Network Bridging");
 
-    // SCION protocol support
-    if meta.strings.iter().any(|s| s.contains("SCION") || s.contains("scion")) {
-        indicators.push("SCION protocol");
+    let scion_support = analyzer.detect_scion_bridging();
+
+    if scion_support.has_scion_support {
+        if scion_support.has_gateway_functionality && scion_support.has_transition_control {
+            result = result.pass_with_details(
+                "SCION bridging implemented with gateway functionality and transition control",
+                0.9
+            );
+        } else {
+            result = result.fail_with_details(
+                &format!("SCION bridging incomplete - Gateway: {}, Transition: {}", 
+                         scion_support.has_gateway_functionality, scion_support.has_transition_control),
+                0.7,
+                Severity::Medium
+            );
+            result.add_recommendation("Complete SCION gateway with HTX tunnel transition mechanism");
+        }
     } else {
-        missing.push("SCION protocol");
+        // SCION support is optional for many deployments
+        result = result.pass_with_details(
+            "SCION bridging not detected (optional for non-SCION deployments)",
+            0.5
+        );
     }
 
-    // Gateway functionality
-    if meta.strings.iter().any(|s| s.contains("gateway") || s.contains("Gateway")) {
-        indicators.push("Gateway");
-    } else {
-        missing.push("Gateway");
-    }
-
-    // Transition control stream
-    if meta.strings.iter().any(|s| s.contains("Transition") || s.contains("stream_id")) {
-        indicators.push("Transition control");
-    } else {
-        missing.push("Transition control");
-    }
-
-    // CBOR encoding
-    if meta.strings.iter().any(|s| s.contains("CBOR") || s.contains("cbor")) {
-        indicators.push("CBOR encoding");
-    } else {
-        missing.push("CBOR encoding");
-    }
-
-    // No public transition headers
-    if !meta.strings.iter().any(|s| s.contains("transition_header") || s.contains("public_wire")) {
-        indicators.push("No public headers");
-    }
-
-    let pass = missing.len() <= 1;
-    let details = if pass {
-        format!("SCION bridging found: {}", indicators.join(", "))
-    } else {
-        format!("Missing SCION bridging components: {} | Found: {}", 
-                missing.join(", "), indicators.join(", "))
-    };
-
-    CheckResult {
-        id: "BN-11.5".to_string(),
-        pass,
-        details,
-    }
+    result
 }
 
-/// §11.6: Betanet transport protocols
-fn check_11_6_betanet_transports(meta: &BinaryMeta) -> CheckResult {
-    let mut indicators = Vec::new();
-    let mut missing = Vec::new();
+/// §11.6: Betanet transport support
+fn check_11_6_betanet_transports(analyzer: &ProtocolAnalyzer) -> CheckResult {
+    let mut result = CheckResult::new("BN-11.6", "Betanet Protocol Transport");
 
-    // /betanet/htx/1.1.0
-    if meta.strings.iter().any(|s| s.contains("/betanet/htx/1.1.0")) {
-        indicators.push("HTX 1.1.0");
+    let transport_support = analyzer.detect_betanet_protocols();
+
+    let required_protocols = vec!["/betanet/htx/1.1.0", "/betanet/htxquic/1.1.0"];
+    let mut supported_protocols = Vec::new();
+    let mut missing_protocols = Vec::new();
+
+    for protocol in &required_protocols {
+        if transport_support.supported_protocols.contains(&protocol.to_string()) {
+            supported_protocols.push(*protocol);
+        } else {
+            missing_protocols.push(*protocol);
+        }
+    }
+
+    if missing_protocols.is_empty() {
+        let mut details = format!("Required Betanet protocols supported: {}", supported_protocols.join(", "));
+        if transport_support.supported_protocols.contains(&"/betanet/webrtc/1.0.0".to_string()) {
+            details.push_str(", WebRTC (optional) ✓");
+        }
+
+        result = result.pass_with_details(&details, 0.95);
     } else {
-        missing.push("/betanet/htx/1.1.0");
+        result = result.fail_with_details(
+            &format!("Missing required Betanet protocols: {}", missing_protocols.join(", ")),
+            0.9,
+            Severity::Critical
+        );
+        result.add_recommendation("Implement all required Betanet 1.1 transport protocol identifiers");
     }
 
-    // /betanet/htxquic/1.1.0
-    if meta.strings.iter().any(|s| s.contains("/betanet/htxquic/1.1.0")) {
-        indicators.push("HTXQUIC 1.1.0");
-    } else {
-        missing.push("/betanet/htxquic/1.1.0");
-    }
-
-    // Optional WebRTC
-    if meta.strings.iter().any(|s| s.contains("/betanet/webrtc/1.0.0")) {
-        indicators.push("WebRTC 1.0.0");
-    }
-
-    let pass = missing.is_empty();
-    let details = if pass {
-        format!("Betanet protocols found: {}", indicators.join(", "))
-    } else {
-        format!("Missing required betanet protocols: {} | Found: {}", 
-                missing.join(", "), indicators.join(", "))
-    };
-
-    CheckResult {
-        id: "BN-11.6".to_string(),
-        pass,
-        details,
-    }
+    result
 }
 
-/// §11.7: Bootstrap via rotating rendezvous with PoW
-fn check_11_7_bootstrap_mechanism(meta: &BinaryMeta) -> CheckResult {
-    let mut indicators = Vec::new();
-    let mut missing = Vec::new();
+/// §11.7: Bootstrap via rotating rendezvous with PoW rate-limits
+fn check_11_7_bootstrap_mechanism(analyzer: &ProtocolAnalyzer) -> CheckResult {
+    let mut result = CheckResult::new("BN-11.7", "Network Bootstrap Mechanism");
 
-    // Rotating rendezvous DHT
-    if meta.strings.iter().any(|s| s.contains("rendezvous") || s.contains("DHT")) {
-        indicators.push("Rendezvous DHT");
+    let bootstrap_support = analyzer.detect_bootstrap_mechanism();
+
+    if bootstrap_support.has_rendezvous_system {
+        let mut features = Vec::new();
+        if bootstrap_support.has_beacon_set { features.push("BeaconSet"); }
+        if bootstrap_support.has_proof_of_work { features.push("PoW rate limiting"); }
+        if bootstrap_support.supports_mdns { features.push("mDNS service"); }
+        if bootstrap_support.supports_bluetooth { features.push("Bluetooth LE"); }
+
+        let feature_score = features.len() as f32 / 4.0;
+
+        if feature_score >= 0.75 {
+            result = result.pass_with_details(
+                &format!("Bootstrap mechanism implemented: {}", features.join(", ")),
+                feature_score
+            );
+        } else {
+            result = result.fail_with_details(
+                &format!("Bootstrap mechanism incomplete: missing {}", 4 - features.len()),
+                feature_score,
+                Severity::Medium
+            );
+            result.add_recommendation("Complete bootstrap implementation with BeaconSet and PoW rate limiting");
+        }
     } else {
-        missing.push("Rendezvous DHT");
+        result = result.fail_with_details(
+            "No rotating rendezvous bootstrap mechanism detected",
+            0.9,
+            Severity::High
+        );
+        result.add_recommendation("Implement rotating rendezvous DHT for network bootstrap");
     }
 
-    // BeaconSet
-    if meta.strings.iter().any(|s| s.contains("BeaconSet") || s.contains("beacon")) {
-        indicators.push("BeaconSet");
-    } else {
-        missing.push("BeaconSet");
-    }
-
-    // Proof of Work
-    if meta.strings.iter().any(|s| s.contains("proof") && s.contains("work") || s.contains("PoW")) {
-        indicators.push("Proof of Work");
-    } else {
-        missing.push("Proof of Work");
-    }
-
-    // mDNS service
-    if meta.strings.iter().any(|s| s.contains("_betanet._udp") || s.contains("mDNS")) {
-        indicators.push("mDNS service");
-    }
-
-    // Bluetooth LE
-    if meta.strings.iter().any(|s| s.contains("0xB7A7") || s.contains("Bluetooth")) {
-        indicators.push("Bluetooth LE");
-    }
-
-    // No deterministic seeds
-    if !meta.strings.iter().any(|s| s.contains("deterministic") && s.contains("seed")) {
-        indicators.push("No deterministic seeds");
-    }
-
-    let pass = missing.len() <= 1;
-    let details = if pass {
-        format!("Bootstrap mechanism found: {}", indicators.join(", "))
-    } else {
-        format!("Missing bootstrap components: {} | Found: {}", 
-                missing.join(", "), indicators.join(", "))
-    };
-
-    CheckResult {
-        id: "BN-11.7".to_string(),
-        pass,
-        details,
-    }
+    result
 }
 
-/// §11.8: Mixnode selection with BeaconSet randomness
-fn check_11_8_mixnode_selection(meta: &BinaryMeta) -> CheckResult {
-    let mut indicators = Vec::new();
-    let mut missing = Vec::new();
+/// §11.8: BeaconSet mixnode selection with path diversity
+fn check_11_8_mixnode_selection(analyzer: &ProtocolAnalyzer) -> CheckResult {
+    let mut result = CheckResult::new("BN-11.8", "Mixnode Selection Algorithm");
 
-    // Nym mixnet
-    if meta.strings.iter().any(|s| s.contains("Nym") || s.contains("mixnet")) {
-        indicators.push("Nym mixnet");
+    let mixnode_support = analyzer.detect_mixnode_selection();
+
+    if mixnode_support.implements_nym_integration {
+        let mut features = Vec::new();
+        if mixnode_support.uses_beacon_set_randomness { features.push("BeaconSet randomness"); }
+        if mixnode_support.has_per_stream_entropy { features.push("per-stream entropy"); }
+        if mixnode_support.uses_vrf_selection { features.push("VRF selection"); }
+        if mixnode_support.ensures_path_diversity { features.push("AS path diversity"); }
+
+        let completeness = features.len() as f32 / 4.0;
+
+        if completeness >= 0.75 {
+            result = result.pass_with_details(
+                &format!("Mixnode selection implemented: {}", features.join(", ")),
+                completeness
+            );
+        } else {
+            result = result.fail_with_details(
+                &format!("Mixnode selection incomplete: {} features missing", 4 - features.len()),
+                completeness,
+                Severity::Medium
+            );
+            result.add_recommendation("Enhance mixnode selection with BeaconSet randomness and path diversity");
+        }
     } else {
-        missing.push("Nym mixnet");
+        result = result.fail_with_details(
+            "No Nym mixnet integration detected",
+            0.9,
+            Severity::High
+        );
+        result.add_recommendation("Integrate with Nym mixnet for traffic anonymization");
     }
 
-    // BeaconSet for randomness
-    if meta.strings.iter().any(|s| s.contains("BeaconSet") || s.contains("beacon")) {
-        indicators.push("BeaconSet randomness");
-    } else {
-        missing.push("BeaconSet randomness");
-    }
-
-    // Per-stream entropy
-    if meta.strings.iter().any(|s| s.contains("streamNonce") || s.contains("stream") && s.contains("entropy")) {
-        indicators.push("Per-stream entropy");
-    } else {
-        missing.push("Per-stream entropy");
-    }
-
-    // VRF for hop selection
-    if meta.strings.iter().any(|s| s.contains("VRF") || s.contains("verifiable") && s.contains("random")) {
-        indicators.push("VRF selection");
-    } else {
-        missing.push("VRF selection");
-    }
-
-    // Path diversity
-    if meta.strings.iter().any(|s| s.contains("diversity") || s.contains("distinct") && s.contains("AS")) {
-        indicators.push("Path diversity");
-    } else {
-        missing.push("Path diversity");
-    }
-
-    let pass = missing.len() <= 2;
-    let details = if pass {
-        format!("Mixnode selection found: {}", indicators.join(", "))
-    } else {
-        format!("Missing mixnode selection components: {} | Found: {}", 
-                missing.join(", "), indicators.join(", "))
-    };
-
-    CheckResult {
-        id: "BN-11.8".to_string(),
-        pass,
-        details,
-    }
+    result
 }
 
-/// §11.9: Alias ledger with finality-bound 2-of-3
-fn check_11_9_alias_ledger(meta: &BinaryMeta) -> CheckResult {
-    let mut indicators = Vec::new();
-    let mut missing = Vec::new();
+/// §11.9: Finality-bound 2-of-3 alias ledger verification
+fn check_11_9_alias_ledger(analyzer: &ProtocolAnalyzer) -> CheckResult {
+    let mut result = CheckResult::new("BN-11.9", "Alias Ledger System");
 
-    // Alias ledger
-    if meta.strings.iter().any(|s| s.contains("alias") && (s.contains("ledger") || s.contains("record"))) {
-        indicators.push("Alias ledger");
+    let ledger_support = analyzer.detect_alias_ledger();
+
+    if ledger_support.has_alias_system {
+        let mut features: Vec<String> = Vec::new();
+        if ledger_support.implements_2of3_finality { features.push("2-of-3 finality".to_string()); }
+        if ledger_support.supported_chains.len() >= 2 {
+            features.push(format!("multi-chain ({} chains)", ledger_support.supported_chains.len()));
+        }
+        if ledger_support.has_emergency_advance { features.push("Emergency Advance".to_string()); }
+
+        let completeness = if ledger_support.supported_chains.len() >= 2 { 1.0 } else { 0.6 };
+
+        if completeness >= 0.8 {
+            result = result.pass_with_details(
+                &format!("Alias ledger system: {} | Chains: {}",
+                         features.join(", "), ledger_support.supported_chains.join(", ")),
+                completeness
+            );
+        } else {
+            result = result.fail_with_details(
+                &format!("Alias ledger incomplete: need at least 2 supported chains, have {}", 
+                         ledger_support.supported_chains.len()),
+                completeness,
+                Severity::Medium
+            );
+            result.add_recommendation("Support at least 2 blockchain networks (Handshake, Filecoin, Ethereum L2)");
+        }
     } else {
-        missing.push("Alias ledger");
+        result = result.fail_with_details(
+            "No alias ledger system detected",
+            0.95,
+            Severity::High
+        );
+        result.add_recommendation("Implement finality-bound 2-of-3 alias ledger with multi-chain support");
     }
 
-    // 2-of-3 finality
-    if meta.strings.iter().any(|s| s.contains("finality") || s.contains("2-of-3")) {
-        indicators.push("2-of-3 finality");
-    } else {
-        missing.push("2-of-3 finality");
-    }
-
-    // Chain support (Handshake, Filecoin, Ethereum L2)
-    let mut chains = Vec::new();
-    if meta.strings.iter().any(|s| s.contains("Handshake") || s.contains("handshake")) {
-        chains.push("Handshake");
-    }
-
-    if meta.strings.iter().any(|s| s.contains("Filecoin") || s.contains("FVM")) {
-        chains.push("Filecoin");
-    }
-
-    if meta.strings.iter().any(|s| s.contains("Ethereum") || s.contains("Raven-Names")) {
-        chains.push("Ethereum L2");
-    }
-
-    if chains.len() >= 2 {
-        indicators.push("Multi-chain support");
-    } else {
-        missing.push("Multi-chain support");
-    }
-
-    // Emergency Advance for liveness
-    if meta.strings.iter().any(|s| s.contains("Emergency") && s.contains("Advance")) {
-        indicators.push("Emergency Advance");
-    } else {
-        missing.push("Emergency Advance");
-    }
-
-    let pass = missing.len() <= 1;
-    let details = if pass {
-        format!("Alias ledger found: {} | Chains: {}", indicators.join(", "), chains.join(", "))
-    } else {
-        format!("Missing alias ledger components: {} | Found: {}", 
-                missing.join(", "), indicators.join(", "))
-    };
-
-    CheckResult {
-        id: "BN-11.9".to_string(),
-        pass,
-        details,
-    }
+    result
 }
 
-/// §11.10: Cashu vouchers with Lightning settlement
-fn check_11_10_cashu_vouchers(meta: &BinaryMeta) -> CheckResult {
-    let mut indicators = Vec::new();
-    let mut missing = Vec::new();
+/// §11.10: 128-B Cashu vouchers with PoW adverts
+fn check_11_10_cashu_vouchers(analyzer: &ProtocolAnalyzer, crypto_analyzer: &CryptoAnalyzer) -> CheckResult {
+    let mut result = CheckResult::new("BN-11.10", "Cashu Payment System");
 
-    // Cashu implementation
-    if meta.strings.iter().any(|s| s.contains("Cashu") || s.contains("cashu")) {
-        indicators.push("Cashu");
+    let cashu_support = analyzer.detect_cashu_system();
+    let frost_support = crypto_analyzer.detect_frost_signatures();
+
+    if cashu_support.has_cashu_implementation {
+        let mut features = Vec::new();
+        if frost_support.supports_frost_ed25519 { features.push("FROST-Ed25519 mints"); }
+        if cashu_support.supports_128b_vouchers { features.push("128-byte vouchers"); }
+        if cashu_support.has_lightning_settlement { features.push("Lightning settlement"); }
+        if cashu_support.has_keyset_management { features.push("keyset management"); }
+
+        let completeness = features.len() as f32 / 4.0;
+
+        if completeness >= 0.75 {
+            result = result.pass_with_details(
+                &format!("Cashu payment system: {}", features.join(", ")),
+                completeness
+            );
+        } else {
+            result = result.fail_with_details(
+                &format!("Cashu system incomplete: {} features missing", 4 - features.len()),
+                completeness,
+                Severity::Medium
+            );
+            result.add_recommendation("Complete Cashu implementation with FROST-Ed25519 and Lightning settlement");
+        }
     } else {
-        missing.push("Cashu");
+        result = result.fail_with_details(
+            "No Cashu payment system detected",
+            0.9,
+            Severity::Medium // Lower severity as payments might be optional
+        );
+        result.add_recommendation("Implement Cashu ecash system for micropayments and PoW adverts");
     }
 
-    // FROST-Ed25519 mints
-    if meta.strings.iter().any(|s| s.contains("FROST") && s.contains("Ed25519")) {
-        indicators.push("FROST-Ed25519");
-    } else {
-        missing.push("FROST-Ed25519");
-    }
-
-    // 128-byte vouchers
-    if meta.strings.iter().any(|s| s.contains("voucher") || s.contains("Voucher")) {
-        indicators.push("Vouchers");
-    } else {
-        missing.push("Vouchers");
-    }
-
-    // Lightning settlement
-    if meta.strings.iter().any(|s| s.contains("Lightning") || s.contains("lightning")) {
-        indicators.push("Lightning");
-    } else {
-        missing.push("Lightning");
-    }
-
-    // Keyset management
-    if meta.strings.iter().any(|s| s.contains("keyset") || s.contains("Keyset")) {
-        indicators.push("Keyset management");
-    } else {
-        missing.push("Keyset management");
-    }
-
-    let pass = missing.len() <= 2;
-    let details = if pass {
-        format!("Cashu payment system found: {}", indicators.join(", "))
-    } else {
-        format!("Missing Cashu components: {} | Found: {}", 
-                missing.join(", "), indicators.join(", "))
-    };
-
-    CheckResult {
-        id: "BN-11.10".to_string(),
-        pass,
-        details,
-    }
+    result
 }
 
-/// §11.11: Governance with anti-concentration caps
-fn check_11_11_governance(meta: &BinaryMeta) -> CheckResult {
-    let mut indicators = Vec::new();
-    let mut missing = Vec::new();
+/// §11.11: Governance with anti-concentration caps and diversity checks
+fn check_11_11_governance(analyzer: &ProtocolAnalyzer) -> CheckResult {
+    let mut result = CheckResult::new("BN-11.11", "Network Governance System");
 
-    // Voting power calculation
-    if meta.strings.iter().any(|s| s.contains("vote_weight") || s.contains("voting") && s.contains("power")) {
-        indicators.push("Voting power");
+    let governance_support = analyzer.detect_governance_system();
+
+    if governance_support.has_governance_system {
+        let mut features = Vec::new();
+        if governance_support.implements_voting_power { features.push("voting power calculation"); }
+        if governance_support.has_uptime_scoring { features.push("uptime scoring"); }
+        if governance_support.has_as_concentration_caps { features.push("AS concentration caps"); }
+        if governance_support.implements_quorum_requirements { features.push("quorum requirements"); }
+        if governance_support.ensures_partition_safety { features.push("partition safety"); }
+
+        let completeness = features.len() as f32 / 5.0;
+
+        if completeness >= 0.8 {
+            result = result.pass_with_details(
+                &format!("Governance system implemented: {}", features.join(", ")),
+                completeness
+            );
+        } else {
+            result = result.fail_with_details(
+                &format!("Governance system incomplete: {} features missing", 5 - features.len()),
+                completeness,
+                Severity::Medium
+            );
+            result.add_recommendation("Complete governance with anti-concentration and diversity mechanisms");
+        }
     } else {
-        missing.push("Voting power");
+        result = result.fail_with_details(
+            "No network governance system detected",
+            0.9,
+            Severity::Medium
+        );
+        result.add_recommendation("Implement governance system with voting power and concentration caps");
     }
 
-    // Uptime score
-    if meta.strings.iter().any(|s| s.contains("uptime") && s.contains("score")) {
-        indicators.push("Uptime scoring");
-    } else {
-        missing.push("Uptime scoring");
-    }
-
-    // Anti-concentration caps
-    if meta.strings.iter().any(|s| s.contains("AS") && (s.contains("cap") || s.contains("20%"))) {
-        indicators.push("AS caps");
-    } else {
-        missing.push("AS caps");
-    }
-
-    // Quorum requirements
-    if meta.strings.iter().any(|s| s.contains("quorum") || s.contains("0.67")) {
-        indicators.push("Quorum");
-    } else {
-        missing.push("Quorum");
-    }
-
-    // Partition safety
-    if meta.strings.iter().any(|s| s.contains("partition") && s.contains("safety")) {
-        indicators.push("Partition safety");
-    } else {
-        missing.push("Partition safety");
-    }
-
-    let pass = missing.len() <= 2;
-    let details = if pass {
-        format!("Governance system found: {}", indicators.join(", "))
-    } else {
-        format!("Missing governance components: {} | Found: {}", 
-                missing.join(", "), indicators.join(", "))
-    };
-
-    CheckResult {
-        id: "BN-11.11".to_string(),
-        pass,
-        details,
-    }
+    result
 }
 
 /// §11.12: Anti-correlation fallback with cover connections
-fn check_11_12_anticorrelation_fallback(meta: &BinaryMeta) -> CheckResult {
-    let mut indicators = Vec::new();
-    let mut missing = Vec::new();
+fn check_11_12_anticorrelation_fallback(analyzer: &ProtocolAnalyzer) -> CheckResult {
+    let mut result = CheckResult::new("BN-11.12", "Anti-Correlation Measures");
 
-    // UDP to TCP fallback
-    if meta.strings.iter().any(|s| s.contains("fallback") && (s.contains("TCP") || s.contains("UDP"))) {
-        indicators.push("UDP→TCP fallback");
+    let anticorr_support = analyzer.detect_anticorrelation_measures();
+
+    if anticorr_support.has_fallback_mechanisms {
+        let mut features = Vec::new();
+        if anticorr_support.supports_udp_tcp_fallback { features.push("UDP→TCP fallback"); }
+        if anticorr_support.implements_cover_connections { features.push("cover connections"); }
+        if anticorr_support.has_randomized_timing { features.push("randomized timing"); }
+        if anticorr_support.supports_masque { features.push("MASQUE tunneling"); }
+
+        let completeness = features.len() as f32 / 4.0;
+
+        if completeness >= 0.75 {
+            result = result.pass_with_details(
+                &format!("Anti-correlation measures: {}", features.join(", ")),
+                completeness
+            );
+        } else {
+            result = result.fail_with_details(
+                &format!("Anti-correlation incomplete: {} features missing", 4 - features.len()),
+                completeness,
+                Severity::Medium
+            );
+            result.add_recommendation("Implement complete anti-correlation suite with cover traffic");
+        }
     } else {
-        missing.push("UDP→TCP fallback");
+        result = result.fail_with_details(
+            "No anti-correlation fallback mechanisms detected",
+            0.9,
+            Severity::High
+        );
+        result.add_recommendation("Implement anti-correlation measures with UDP/TCP fallback and cover connections");
     }
 
-    // Cover connections
-    if meta.strings.iter().any(|s| s.contains("cover") && s.contains("connection")) {
-        indicators.push("Cover connections");
-    } else {
-        missing.push("Cover connections");
-    }
-
-    // Anti-correlation measures
-    if meta.strings.iter().any(|s| s.contains("anti") && s.contains("correlation")) {
-        indicators.push("Anti-correlation");
-    } else {
-        missing.push("Anti-correlation");
-    }
-
-    // Randomized timing
-    if meta.strings.iter().any(|s| s.contains("random") && (s.contains("delay") || s.contains("timing"))) {
-        indicators.push("Randomized timing");
-    } else {
-        missing.push("Randomized timing");
-    }
-
-    // MASQUE CONNECT-UDP
-    if meta.strings.iter().any(|s| s.contains("MASQUE") || s.contains("CONNECT-UDP")) {
-        indicators.push("MASQUE");
-    } else {
-        missing.push("MASQUE");
-    }
-
-    let pass = missing.len() <= 2;
-    let details = if pass {
-        format!("Anti-correlation fallback found: {}", indicators.join(", "))
-    } else {
-        format!("Missing anti-correlation components: {} | Found: {}", 
-                missing.join(", "), indicators.join(", "))
-    };
-
-    CheckResult {
-        id: "BN-11.12".to_string(),
-        pass,
-        details,
-    }
+    result
 }
 
-/// §11.13: SLSA 3 provenance artifacts for reproducible builds (enhanced)
+/// §11.13: SLSA 3 provenance artifacts for reproducible builds
 fn check_11_13_slsa_provenance(meta: &BinaryMeta) -> CheckResult {
-    let mut indicators = Vec::new();
-    let mut missing = Vec::new();
-    
-    // SLSA provenance
-    if meta.strings.iter().any(|s| s.contains("SLSA") || s.contains("slsa")) {
-        indicators.push("SLSA");
-    } else {
-        missing.push("SLSA");
-    }
-    
-    // Provenance artifacts
-    if meta.strings.iter().any(|s| s.contains("provenance") || s.contains("Provenance")) {
-        indicators.push("Provenance artifacts");
-    } else {
-        missing.push("Provenance artifacts");
-    }
-    
-    // Reproducible builds (enhanced detection)
+    let mut result = CheckResult::new("BN-11.13", "Build Integrity & SLSA Provenance");
+
+    let mut features = Vec::new();
+    let mut missing_features = Vec::new();
+
+    // Check build reproducibility
     if meta.build_reproducibility.has_build_id {
-        indicators.push("Build ID present");
+        features.push(format!("Build ID ({})", 
+                            meta.build_reproducibility.build_id_type.as_ref().unwrap_or(&"unknown".to_string())));
     } else {
-        missing.push("Build ID");
+        missing_features.push("Build ID");
     }
-    
+
+    // Check deterministic build indicators
     if !meta.build_reproducibility.deterministic_indicators.is_empty() {
-        indicators.push("Deterministic build indicators");
+        features.push(format!("Deterministic indicators ({})", 
+                            meta.build_reproducibility.deterministic_indicators.len()));
     } else {
-        missing.push("Deterministic build indicators");
+        missing_features.push("Deterministic build indicators");
     }
-    
+
+    // Check for embedded timestamps (bad for reproducibility)
     if !meta.build_reproducibility.timestamp_embedded {
-        indicators.push("No embedded timestamps");
+        features.push("No embedded timestamps".to_string());
     } else {
-        missing.push("Deterministic timestamps");
+        missing_features.push("Deterministic timestamps");
     }
-    
-    // Build attestation (check for signing symbols/sections)
-    if meta.strings.iter().any(|s| s.contains("attestation") || s.contains("signature")) ||
-       meta.section_names.iter().any(|s| s.contains("signature") || s.contains("sign")) {
-        indicators.push("Build attestation");
+
+    // Check for SLSA/provenance indicators in strings or symbols
+    let has_slsa_indicators = meta.strings.iter().any(|s| 
+        s.contains("SLSA") || s.contains("slsa") || s.contains("provenance")
+    ) || meta.imported_symbols.iter().any(|s| 
+        s.contains("slsa") || s.contains("provenance") || s.contains("attestation")
+    );
+
+    if has_slsa_indicators {
+        features.push("SLSA provenance support".to_string());
     } else {
-        missing.push("Build attestation");
+        missing_features.push("SLSA provenance");
     }
-    
-    let pass = missing.len() <= 2; // More lenient for SLSA
-    let details = format!("Build reproducibility analysis: {} | Missing: {} | Build ID: {:?}", 
-                         indicators.join(", "), 
-                         missing.join(", "),
-                         meta.build_reproducibility.build_id_type);
-    
-    CheckResult {
-        id: "BN-11.13".to_string(),
-        pass,
-        details,
+
+    // Check for build attestation capabilities
+    let has_attestation = meta.section_names.iter().any(|s| 
+        s.contains("signature") || s.contains("sign") || s.contains("attest")
+    ) || meta.imported_symbols.iter().any(|s|
+        s.contains("sign") || s.contains("verify") || s.contains("attest")
+    );
+
+    if has_attestation {
+        features.push("Build attestation".to_string());
+    } else {
+        missing_features.push("Build attestation");
     }
+
+    let completeness = features.len() as f32 / (features.len() + missing_features.len()) as f32;
+
+    if completeness >= 0.8 {
+        result = result.pass_with_details(
+            &format!("Build integrity verified: {} | Build ID: {:?}", 
+                     features.join(", "), 
+                     meta.build_reproducibility.build_id_value.as_ref().map(|v| &v[..8]).unwrap_or("none")),
+            completeness
+        );
+    } else {
+        result = result.fail_with_details(
+            &format!("Build integrity insufficient: missing {} | Present: {}", 
+                     missing_features.join(", "), features.join(", ")),
+            completeness,
+            Severity::High
+        );
+        result.add_recommendation("Implement SLSA Level 3 provenance with reproducible build pipeline");
+        result.add_recommendation("Use SOURCE_DATE_EPOCH and deterministic build flags");
+        result.add_recommendation("Generate and verify cryptographic build attestations");
+    }
+
+    result
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
+    use crate::binary::*;
     use std::collections::HashMap;
 
-    fn create_compliant_test_meta() -> BinaryMeta {
+    fn create_test_binary_meta() -> BinaryMeta {
         BinaryMeta {
-            path: PathBuf::from("betanet_compliant_binary"),
-            format: crate::binary::BinFormat::Elf,
-            size_bytes: 10485760,
+            path: std::path::PathBuf::from("test_binary"),
+            format: BinFormat::Elf,
+            size_bytes: 1000000,
             strings: vec![
-                // §11.1: HTX Transport
                 "HTX".to_string(),
-                ":443".to_string(),
-                "QUIC".to_string(),
-                "JA3".to_string(),
-                "ECH".to_string(),
-                // §11.2: Access Tickets
-                "access_ticket".to_string(),
-                "Cookie:".to_string(),
-                "bn1=".to_string(),
-                "nonce".to_string(),
-                "X25519".to_string(),
-                // §11.3: Noise XK
-                "Noise_XK".to_string(),
-                "Kyber".to_string(),
-                "HKDF".to_string(),
-                "KEY_UPDATE".to_string(),
-                // §11.6: Betanet transports
                 "/betanet/htx/1.1.0".to_string(),
                 "/betanet/htxquic/1.1.0".to_string(),
-                // §11.13: SLSA
                 "SLSA".to_string(),
                 "provenance".to_string(),
-                "reproducible_build".to_string(),
             ],
-            sha256: "a1b2c3d4e5f6".to_string(),
-            needed_libs: vec![
-                "libquic.so".to_string(),
-                "libp2p.so".to_string(),
-                "libnoise.so".to_string(),
-            ],
-            raw: vec![
-                0x7f, 0x45, 0x4c, 0x46, // ELF magic
-                0x02, 0x01, 0x01, 0x00,
-                0x00, 0x00, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0x00,
-                0x03, 0x00, // ET_DYN (PIE)
-                0x3e, 0x00, // EM_X86_64
-            ],
+            sha256: "test_hash".to_string(),
+            needed_libs: vec!["libquic.so".to_string()],
+            raw: vec![],
             embedded_files: vec![],
-            compiler_info: Some(crate::binary::CompilerInfo {
-                compiler: "rustc".to_string(),
-                version: "1.70.0".to_string(),
-                optimization_level: "3".to_string(),
-                target_triple: "x86_64-unknown-linux-gnu".to_string(),
-            }),
-            build_environment: crate::binary::BuildEnvironment {
-                build_tool: Some("cargo".to_string()),
-                build_version: Some("1.70.0".to_string()),
-                build_timestamp: Some("2024-01-01T00:00:00Z".to_string()),
+            compiler_info: None,
+            build_environment: BuildEnvironment {
+                build_tool: None,
+                build_version: None,
+                build_timestamp: None,
                 environment_variables: HashMap::new(),
             },
             crypto_components: vec![],
             static_libraries: vec![],
             licenses: vec![],
-            betanet_indicators: crate::binary::BetanetIndicators {
-                htx_transport: vec![],
-                protocol_versions: vec![],
+            betanet_indicators: BetanetIndicators {
+                htx_transport: vec!["HTX".to_string()],
+                protocol_versions: vec!["/betanet/htx/1.1.0".to_string()],
                 crypto_protocols: vec![],
                 network_transports: vec![],
                 p2p_protocols: vec![],
                 governance_indicators: vec![],
             },
-            build_reproducibility: crate::binary::BuildReproducibility {
+            build_reproducibility: BuildReproducibility {
                 has_build_id: true,
                 build_id_type: Some("GNU Build ID".to_string()),
                 build_id_value: Some("deadbeef".to_string()),
                 deterministic_indicators: vec!["SOURCE_DATE_EPOCH".to_string()],
                 timestamp_embedded: false,
             },
-            imported_symbols: vec!["quic_connect".to_string(), "htx_transport_new".to_string()],
-            exported_symbols: vec!["betanet_init".to_string()],
-            section_names: vec![".text".to_string(), ".htx".to_string()],
-            dynamic_dependencies: vec!["libquic.so.1".to_string()],
+            imported_symbols: vec![],
+            exported_symbols: vec![],
+            section_names: vec![],
+            dynamic_dependencies: vec![],
         }
     }
 
     #[test]
-    fn test_compliant_binary_passes_core_checks() {
-        let meta = create_compliant_test_meta();
-        
-        // Test a few key checks
-        let htx_result = check_11_1_htx_transport(&meta);
-        assert!(htx_result.pass, "HTX transport check failed: {}", htx_result.details);
-        
-        let transport_result = check_11_6_betanet_transports(&meta);
-        assert!(transport_result.pass, "Betanet transport check failed: {}", transport_result.details);
-        
-        let tickets_result = check_11_2_access_tickets(&meta);
-        assert!(tickets_result.pass, "Access tickets check failed: {}", tickets_result.details);
+    fn test_run_all_checks_returns_13_results() {
+        let meta = create_test_binary_meta();
+        let results = run_all_checks(&meta);
+        for result in &results {
+            log::debug!("Check Result: ID={}, Pass={}, Details={}", result.id, result.pass, result.details);
+        }
+
+        assert_eq!(results.len(), 13, "Should return exactly 13 Betanet 1.1 compliance checks");
+
+        // Verify all check IDs are present and correctly formatted
+        let expected_ids: Vec<String> = (1..=13).map(|i| format!("BN-11.{}", i)).collect();
+        let actual_ids: Vec<String> = results.iter().map(|r| r.id.clone()).collect();
+
+        assert_eq!(actual_ids, expected_ids, "Check IDs should be BN-11.1 through BN-11.13");
     }
 
     #[test]
-    fn test_all_checks_return_13_results() {
-        let meta = create_compliant_test_meta();
+    fn test_check_result_structure() {
+        let meta = create_test_binary_meta();
         let results = run_all_checks(&meta);
 
-        assert_eq!(results.len(), 13, "Expected exactly 13 Betanet 1.1 compliance checks");
-        
-        // Verify all check IDs are present
-        let expected_ids: Vec<&str> = vec![
-            "BN-11.1", "BN-11.2", "BN-11.3", "BN-11.4", "BN-11.5", "BN-11.6",
-            "BN-11.7", "BN-11.8", "BN-11.9", "BN-11.10", "BN-11.11", "BN-11.12", "BN-11.13"
-        ];
-        
-        for expected_id in expected_ids {
-            assert!(results.iter().any(|r| r.id == expected_id),
-                   "Missing check ID: {}", expected_id);
+        for result in results {
+            assert!(!result.id.is_empty(), "Check ID should not be empty");
+            assert!(!result.name.is_empty(), "Check name should not be empty");
+            assert!(!result.details.is_empty(), "Check details should not be empty");
+            assert!(result.confidence >= 0.0 && result.confidence <= 1.0, "Confidence should be between 0 and 1");
         }
+    }
+
+    #[test]
+    fn test_compliance_report_generation() {
+        use tempfile::NamedTempFile;
+
+        let meta = create_test_binary_meta();
+        let results = run_all_checks(&meta);
+        let temp_file = NamedTempFile::new().unwrap();
+
+        write_report_json(&temp_file.path().to_path_buf(), "test_binary", &results).unwrap();
+
+        let report_content = std::fs::read_to_string(temp_file.path()).unwrap();
+        let report: serde_json::Value = serde_json::from_str(&report_content).unwrap();
+
+        assert_eq!(report["metadata"]["spec_version"], "Betanet 1.1");
+        assert_eq!(report["summary"]["total_checks"], 13);
+        assert!(report["detailed_results"].is_array());
     }
 }

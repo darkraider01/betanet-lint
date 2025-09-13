@@ -14,121 +14,38 @@ fn create_betanet_compliant_meta() -> BinaryMeta {
         format: BinFormat::Elf,
         size_bytes: 10485760,
         strings: vec![
-            // §11.1: HTX Transport
-            "HTX".to_string(),
-            "cover_transport".to_string(),
-            ":443".to_string(),
-            "QUIC".to_string(),
-            "JA3".to_string(),
-            "JA4".to_string(),
-            "ECH".to_string(),
-            "encrypted_client_hello".to_string(),
-            // §11.2: Access Tickets
-            "access_ticket".to_string(),
-            "Cookie:".to_string(),
-            "__Host-".to_string(),
-            "bn1=".to_string(),
-            "application/x-www-form-urlencoded".to_string(),
-            "nonce".to_string(),
-            "replay".to_string(),
-            "X25519".to_string(),
-            // §11.3: Noise XK
-            "Noise_XK".to_string(),
-            "Kyber".to_string(),
-            "Kyber768".to_string(),
-            "HKDF".to_string(),
-            "K0c".to_string(),
-            "K0s".to_string(),
-            "KEY_UPDATE".to_string(),
-            "rekey".to_string(),
-            "nonce_counter".to_string(),
-            // §11.4: HTTP Emulation
-            "h2".to_string(),
-            "HTTP/2".to_string(),
-            "SETTINGS".to_string(),
-            "h3".to_string(),
-            "HTTP/3".to_string(),
-            "PING_random".to_string(),
-            "PRIORITY".to_string(),
-            "padding_DATA".to_string(),
-            // §11.5: SCION Bridging
-            "SCION".to_string(),
-            "gateway".to_string(),
-            "Transition".to_string(),
-            "stream_id".to_string(),
-            "CBOR".to_string(),
+            // §11.1: HTX Transport (these are now moved to imported_symbols as they are actual symbols)
+            "JA3".to_string(), "JA4".to_string(), "ECH".to_string(), "encrypted_client_hello".to_string(),
             // §11.6: Betanet transports
-            "/betanet/htx/1.1.0".to_string(),
-            "/betanet/htxquic/1.1.0".to_string(),
+            "/betanet/htx/1.1.0".to_string(), "/betanet/htxquic/1.1.0".to_string(),
             "/betanet/webrtc/1.0.0".to_string(),
-            // §11.7: Bootstrap
-            "rendezvous".to_string(),
-            "DHT".to_string(),
-            "BeaconSet".to_string(),
-            "beacon".to_string(),
-            "proof_of_work".to_string(),
-            "PoW".to_string(),
-            "_betanet._udp".to_string(),
-            "mDNS".to_string(),
-            "0xB7A7".to_string(),
-            "Bluetooth".to_string(),
-            // §11.8: Mixnode Selection
-            "Nym".to_string(),
-            "mixnet".to_string(),
-            "streamNonce".to_string(),
-            "stream_entropy".to_string(),
-            "VRF".to_string(),
-            "verifiable_random".to_string(),
-            "diversity".to_string(),
-            "distinct_AS".to_string(),
-            // §11.9: Alias Ledger
-            "alias_ledger".to_string(),
-            "alias_record".to_string(),
-            "finality".to_string(),
-            "2-of-3".to_string(),
-            "Handshake".to_string(),
-            "Filecoin".to_string(),
-            "FVM".to_string(),
-            "Ethereum".to_string(),
-            "Raven-Names".to_string(),
-            "Emergency_Advance".to_string(),
-            // §11.10: Cashu Vouchers
-            "Cashu".to_string(),
-            "FROST_Ed25519".to_string(),
-            "voucher".to_string(),
-            "Lightning".to_string(),
-            "keyset".to_string(),
-            // §11.11: Governance
-            "vote_weight".to_string(),
-            "voting_power".to_string(),
-            "uptime_score".to_string(),
-            "AS_cap".to_string(),
-            "20%".to_string(),
-            "quorum".to_string(),
-            "0.67".to_string(),
-            "partition_safety".to_string(),
-            // §11.12: Anti-correlation
-            "fallback_TCP".to_string(),
-            "fallback_UDP".to_string(),
-            "cover_connection".to_string(),
-            "anti_correlation".to_string(),
-            "random_delay".to_string(),
-            "random_timing".to_string(),
-            "MASQUE".to_string(),
-            "CONNECT-UDP".to_string(),
             // §11.13: SLSA
-            "SLSA".to_string(),
-            "provenance".to_string(),
-            "reproducible_build".to_string(),
-            "attestation".to_string(),
-            "signature".to_string(),
+            "SLSA".to_string(), "provenance".to_string(), "reproducible_build".to_string(),
+            "attestation".to_string(), "signature".to_string(),
         ],
-        sha256: "deadbeef".to_string(),
+        sha256: "deadbeefcafebabe".to_string(),
         needed_libs: vec![
+            "libhtx.so".to_string(),
             "libquic.so".to_string(),
-            "libp2p.so".to_string(),
             "libnoise.so".to_string(),
+            "libscion.so".to_string(),
+            "libbetanet.so".to_string(),
+            "libdht.so".to_string(),
+            "libnym.so".to_string(),
+            "libalias.so".to_string(),
             "libcashu.so".to_string(),
+            "libgovernance.so".to_string(),
+            "libanticorr.so".to_string(),
+            "libslsa.so".to_string(),
+            "libja3.so".to_string(),
+            "libja4.so".to_string(),
+            "libech.so".to_string(),
+            "libboringssl.so".to_string(),
+            "libopenssl.so".to_string(),
+            "libfingerprint.so".to_string(),
+            "libmdns.so".to_string(), // Added for BN-11.7
+            "libbluetooth.so".to_string(), // Added for BN-11.7
+            "libmasque.so".to_string(), // Added for BN-11.12
         ],
         raw: create_test_elf_with_build_id(),
         embedded_files: vec![],
@@ -155,10 +72,46 @@ fn create_betanet_compliant_meta() -> BinaryMeta {
                 compliance_status: ComplianceStatus::Approved,
             },
             CryptographicComponent {
+                algorithm: "SHA-256".to_string(),
+                key_length: Some(256),
+                mode: None,
+                implementation: "ring".to_string(),
+                quantum_safe: true,
+                usage_context: vec![CryptoUsage::Hashing],
+                compliance_status: ComplianceStatus::Approved,
+            },
+            CryptographicComponent {
+                algorithm: "Kyber768".to_string(),
+                key_length: Some(768),
+                mode: Some("hybrid".to_string()),
+                implementation: "oq_rust".to_string(),
+                quantum_safe: true,
+                usage_context: vec![CryptoUsage::KeyExchange],
+                compliance_status: ComplianceStatus::Approved,
+            },
+            CryptographicComponent {
                 algorithm: "Ed25519".to_string(),
                 key_length: Some(255),
                 mode: None,
                 implementation: "ring".to_string(),
+                quantum_safe: true,
+                usage_context: vec![CryptoUsage::Signing],
+                compliance_status: ComplianceStatus::Approved,
+            },
+            CryptographicComponent {
+                algorithm: "X25519".to_string(),
+                key_length: Some(255),
+                mode: None,
+                implementation: "ring".to_string(),
+                quantum_safe: true,
+                usage_context: vec![CryptoUsage::KeyExchange],
+                compliance_status: ComplianceStatus::Approved,
+            },
+            CryptographicComponent {
+                algorithm: "FROST-Ed25519".to_string(),
+                key_length: Some(255),
+                mode: None,
+                implementation: "frost_dalek".to_string(),
                 quantum_safe: true,
                 usage_context: vec![CryptoUsage::Signing],
                 compliance_status: ComplianceStatus::Approved,
@@ -168,11 +121,11 @@ fn create_betanet_compliant_meta() -> BinaryMeta {
         licenses: vec![],
         betanet_indicators: BetanetIndicators {
             htx_transport: vec!["HTX".to_string(), "cover_transport".to_string()],
-            protocol_versions: vec!["/betanet/htx/1.1.0".to_string(), "/betanet/htxquic/1.1.0".to_string()],
-            crypto_protocols: vec!["Noise_XK".to_string(), "Kyber".to_string()],
-            network_transports: vec!["QUIC".to_string(), ":443".to_string()],
-            p2p_protocols: vec!["libp2p".to_string(), "DHT".to_string()],
-            governance_indicators: vec!["vote_weight".to_string(), "quorum".to_string()],
+            protocol_versions: vec!["/betanet/htx/1.1.0".to_string(), "/betanet/htxquic/1.1.0".to_string(), "/betanet/webrtc/1.1.0".to_string()],
+            crypto_protocols: vec!["Noise_XK".to_string(), "Kyber".to_string(), "FROST_Ed25519".to_string()],
+            network_transports: vec!["QUIC".to_string(), ":443".to_string(), "h2".to_string(), "h3".to_string(), "SCION".to_string(), "MASQUE".to_string()],
+            p2p_protocols: vec!["DHT".to_string(), "BeaconSet".to_string(), "Nym".to_string()],
+            governance_indicators: vec!["vote_weight".to_string(), "quorum".to_string(), "alias_ledger".to_string(), "Cashu".to_string(), "SLSA".to_string()],
         },
         build_reproducibility: BuildReproducibility {
             has_build_id: true,
@@ -181,10 +134,92 @@ fn create_betanet_compliant_meta() -> BinaryMeta {
             deterministic_indicators: vec!["SOURCE_DATE_EPOCH".to_string()],
             timestamp_embedded: false,
         },
-        imported_symbols: vec![],
-        exported_symbols: vec![],
-        section_names: vec![],
-        dynamic_dependencies: vec![],
+        imported_symbols: vec![
+            // §11.1: HTX Transport
+            "htx_init".to_string(), "htx_send".to_string(), "htx_recv".to_string(),
+            "cover_transport_init".to_string(), "cover_transport_send".to_string(),
+            "tcp_443_listen".to_string(), "quic_443_connect".to_string(),
+            "ja3_fingerprint".to_string(), "ja4_fingerprint".to_string(),
+            "ech_negotiate".to_string(), "encrypted_client_hello_setup".to_string(),
+            "tls_fingerprint".to_string(), "client_hello_".to_string(),
+            "ech_".to_string(), "ECH_".to_string(), "encrypted_client_hello".to_string(),
+
+            // §11.2: Access Tickets
+            "access_ticket_issue".to_string(), "access_ticket_verify".to_string(),
+            "cookie_carrier_negotiate".to_string(), "query_carrier_negotiate".to_string(),
+            "body_carrier_negotiate".to_string(), "replay_protection_check".to_string(),
+            "rate_limit_apply".to_string(), "x25519_key_exchange".to_string(),
+
+            // §11.3: Noise XK
+            "Noise_XK_handshake".to_string(), "Kyber768_encapsulate".to_string(),
+            "hkdf_key_derive".to_string(), "key_separation_k0c".to_string(),
+            "key_separation_k0s".to_string(), "key_update_rekey".to_string(),
+            "nonce_lifecycle_management".to_string(),
+
+            // §11.4: HTTP Emulation
+            "h2_stream_open".to_string(), "h3_datagram_send".to_string(),
+            "http2_settings_frame".to_string(), "http3_settings_frame".to_string(),
+            "ping_cadence_adaptive".to_string(), "priority_frame_set".to_string(),
+            "padding_data_insert".to_string(),
+
+            // §11.5: SCION Bridging
+            "scion_path_lookup".to_string(), "scion_gateway_route".to_string(),
+            "transition_control_init".to_string(), "stream_id_allocate".to_string(),
+            "cbor_encode".to_string(),
+
+            // §11.7: Bootstrap
+            "rendezvous_dht_bootstrap".to_string(), "beacon_set_fetch".to_string(),
+            "proof_of_work_verify".to_string(), "mdns_service_discover".to_string(),
+            "bluetooth_le_connect".to_string(),
+
+            // §11.8: Mixnode Selection
+            "nym_mixnet_route".to_string(), "beacon_set_randomness_derive".to_string(),
+            "stream_entropy_generate".to_string(), "vrf_select_mixnode".to_string(),
+            "path_diversity_ensure".to_string(),
+
+            // §11.9: Alias Ledger
+            "finality_2of3_verify".to_string(), "handshake_chain_sync".to_string(),
+            "filecoin_fvm_call".to_string(), "ethereum_l2_tx".to_string(),
+            "raven_names_resolve".to_string(), "emergency_advance_trigger".to_string(),
+            "alias_ledger_lookup".to_string(), "alias_record_create".to_string(),
+
+            // §11.10: Cashu Vouchers
+            "cashu_mint_token".to_string(), "frost_ed25519_sign".to_string(),
+            "voucher_issue_128b".to_string(), "lightning_settlement_init".to_string(),
+            "keyset_management_rotate".to_string(),
+
+            // §11.11: Governance
+            "governance_vote_submit".to_string(), "voting_power_calculate".to_string(),
+            "uptime_scoring_update".to_string(), "as_concentration_cap_check".to_string(),
+            "quorum_requirements_verify".to_string(), "partition_safety_ensure".to_string(),
+
+            // §11.12: Anti-correlation
+            "fallback_udp_to_tcp".to_string(), "cover_connection_establish".to_string(),
+            "randomized_timing_apply".to_string(), "masque_tunnel_open".to_string(),
+
+            // §11.13: SLSA (these are now moved to imported_symbols as they are actual symbols)
+            "slsa_provenance_generate".to_string(), "reproducible_build_verify".to_string(),
+            "attestation_create".to_string(), "signature_verify".to_string(),
+        ],
+        exported_symbols: vec![
+            "htx_public_api".to_string(), "access_ticket_public_api".to_string(),
+            "noise_xk_public_api".to_string(), "http_emulation_public_api".to_string(),
+            "scion_bridging_public_api".to_string(), "betanet_transport_public_api".to_string(),
+            "bootstrap_public_api".to_string(), "mixnode_selection_public_api".to_string(),
+            "alias_ledger_public_api".to_string(), "cashu_public_api".to_string(),
+            "governance_public_api".to_string(), "anticorrelation_public_api".to_string(),
+            "slsa_public_api".to_string(),
+        ],
+        section_names: vec![
+            ".htx.data".to_string(), ".noise.text".to_string(), ".slsa.note".to_string(),
+            ".betanet.config".to_string(),
+        ],
+        dynamic_dependencies: vec![
+            "libquic.so".to_string(), "libnoise.so".to_string(), "libssl.so".to_string(),
+            "libcrypto.so".to_string(), "libffi.so".to_string(),
+            "libja3.so".to_string(), "libja4.so".to_string(), "libech.so".to_string(),
+            "libboringssl.so".to_string(), "libopenssl.so".to_string(),
+        ],
     }
 }
 
@@ -199,7 +234,7 @@ fn create_test_elf_with_build_id() -> Vec<u8> {
         0x01, 0x00, 0x00, 0x00, // e_version = 1
         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // e_entry
         0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // e_phoff
-        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // e_shoff
+        0x00, 0x00, 0x00, 0x00, // e_shoff
         0x00, 0x00, 0x00, 0x00, // e_flags
         0x40, 0x00, // e_ehsize = 64
         0x38, 0x00, // e_phentsize = 56
@@ -276,6 +311,10 @@ mod tests {
         
         // Most checks should pass for compliant binary
         let passed_count = results.iter().filter(|r| r.pass).count();
+        println!("Passed checks: {}", passed_count);
+        for result in &results {
+            println!("Check Result: ID={}, Pass={}, Details={}", result.id, result.pass, result.details);
+        }
         assert!(passed_count >= 10, "Expected at least 10 checks to pass, got {}", passed_count);
         
         // Verify specific critical checks pass
@@ -323,11 +362,11 @@ mod tests {
             // Check details should mention specific Betanet concepts
             if result.pass {
                 match result.id.as_str() {
-                    "BN-11.1" => assert!(result.details.contains("HTX"), "HTX check should mention HTX protocol"),
-                    "BN-11.2" => assert!(result.details.contains("ticket"), "Access ticket check should mention tickets"),
-                    "BN-11.3" => assert!(result.details.contains("Noise"), "Noise check should mention Noise protocol"),
-                    "BN-11.6" => assert!(result.details.contains("Betanet protocols found"), "Transport check should mention betanet protocols"),
-                    "BN-11.13" => assert!(result.details.contains("SLSA") || result.details.contains("Build"), "SLSA check should mention SLSA or build"),
+                    "BN-11.1" => assert!(result.details.contains("Complete HTX implementation detected: TCP-443"), "HTX check should mention HTX protocol"),
+                    "BN-11.2" => assert!(result.details.contains("Complete access ticket system:"), "Access ticket check should mention tickets"),
+                    "BN-11.3" => assert!(result.details.contains("Complete Noise XK implementation"), "Noise check should mention Noise protocol"),
+                    "BN-11.6" => assert!(result.details.contains("Required Betanet protocols supported:"), "Transport check should mention betanet protocols"),
+                    "BN-11.13" => assert!(result.details.contains("Build integrity verified") && result.details.contains("SLSA provenance support") && result.details.contains("Build ID")),
                     _ => {} // Other checks can have various valid details
                 }
             }
@@ -343,7 +382,7 @@ mod tests {
             // Each check should have proper structure
             assert!(!result.id.is_empty(), "Check ID should not be empty");
             assert!(result.id.starts_with("BN-11."), "Check ID should start with BN-11.");
-            assert!(!result.details.is_empty(), "Check details should not be empty");
+            assert!(!result.details.is_empty(), "Check details should be at least 10 characters: '{}'", result.details);
             
             // Details should be informative
             assert!(result.details.len() >= 10, "Check details should be at least 10 characters: '{}'", result.details);

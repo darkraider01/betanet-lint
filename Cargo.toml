@@ -1,45 +1,72 @@
 [package]
 name = "betanet-lint"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 authors = ["Betanet Team <team@betanet.org>"]
-description = "Betanet §11 compliance linter with enhanced SBOM generation"
+description = "Betanet 1.1 §11 compliance verification tool with SLSA 3 provenance"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/darkraider01/betanet-lint"
+homepage = "https://betanet.org"
+keywords = ["betanet", "compliance", "sbom", "slsa", "security"]
+categories = ["command-line-utilities", "development-tools"]
+readme = "README.md"
 
 [[bin]]
 name = "betanet-lint"
 path = "src/main.rs"
 
 [dependencies]
+# Core CLI and parsing
 clap = { version = "4.4", features = ["derive"] }
-goblin = "0.7"
-sha2 = "0.10"
-md5 = "0.7"
-regex = "1.10"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+
+# Binary analysis - proper format parsing, not string scanning
+goblin = "0.8"
+memmap2 = "0.9"
+byteorder = "1.5"
+
+# Cryptography and hashing
+sha2 = "0.10"
+hex = "0.4"
+ring = "0.17"
+
+# Networking with timeouts and security
+reqwest = { version = "0.12", features = ["json"] }
+tokio = { version = "1.0", features = ["full"] }
+
+# Time and UUID
 chrono = { version = "0.4", features = ["serde"] }
-prettytable-rs = "0.10"
+uuid = { version = "1.6", features = ["v4", "serde"] }
+
+# Enhanced SBOM generation
+spdx = "0.10"
+
+# Logging and error handling
 env_logger = "0.10"
 log = "0.4"
 thiserror = "1.0"
-uuid = { version = "1.6", features = ["v4"] }
+anyhow = "1.0"
+
+# String parsing and regex (used sparingly)
+regex = "1.10"
 strum = { version = "0.25", features = ["derive"] }
 
-# SBOM dependencies
-cyclonedx-bom = "0.5"
-tokio = { version = "1.0", features = ["full"] }
-reqwest = { version = "0.11", features = ["json"] }
+# Console output
+prettytable-rs = "0.10"
 
-# New dependencies for enhanced analysis
-memmap2 = "0.9"
-byteorder = "1.5"
-hex = "0.4"
+# Security audit integration
+cargo-audit = { version = "0.21", optional = true }
+cargo-deny = { version = "0.15", optional = true }
 
 [dev-dependencies]
 tempfile = "3.8"
 assert_cmd = "2.0"
+predicates = "3.0"
+
+[features]
+default = ["security-audit"]
+security-audit = ["dep:cargo-audit", "dep:cargo-deny"]
 
 [profile.release]
 opt-level = 3
@@ -47,3 +74,7 @@ lto = true
 codegen-units = 1
 panic = "abort"
 strip = true
+
+[profile.dev]
+opt-level = 0
+debug = true

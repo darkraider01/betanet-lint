@@ -1,7 +1,81 @@
+# Security policy configuration for betanet-lint
+# This file enforces security and compliance policies for dependencies
+
 [licenses]
+# Only allow approved licenses
 allow = [
     "MIT",
-    "Apache-2.0",
-    "BSD-3-Clause",
-    "Unicode-3.0",
+    "Apache-2.0", 
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause", 
+    "ISC",
+    "Unicode-DFS-2016",
+    "CC0-1.0",
 ]
+
+# Deny problematic licenses
+deny = [
+    "GPL-2.0",
+    "GPL-3.0", 
+    "AGPL-1.0",
+    "AGPL-3.0",
+    "LGPL-2.0",
+    "LGPL-2.1", 
+    "LGPL-3.0",
+    "EUPL-1.0",
+    "EUPL-1.1",
+    "EUPL-1.2",
+]
+
+confidence-threshold = 0.8
+exceptions = []
+
+[bans]
+# Deny crates with known security issues
+deny = [
+    # Cryptographically broken
+    { name = "md5", version = "*" },
+    { name = "sha1", version = "*" },
+
+    # Unmaintained crypto
+    { name = "rust-crypto", version = "*" },
+
+    # Vulnerable versions
+    { name = "openssl", version = "<0.10.55" },
+    { name = "rustls", version = "<0.21.0" },
+
+    # Yanked crates
+    { name = "chrono", version = "=0.4.20" },
+]
+
+# Skip certain crates from duplicate version detection
+skip = []
+
+# Skip crates for tree analysis
+skip-tree = []
+
+[advisories]
+# Configure security advisory checking
+db-path = "~/.cargo/advisory-db"
+db-urls = ["https://github.com/RustSec/advisory-db"]
+
+# Policy for handling vulnerabilities
+vulnerability = "deny"      # Fail on any vulnerability
+unmaintained = "warn"       # Warn on unmaintained crates  
+unsound = "warn"           # Warn on unsound crates
+notice = "warn"            # Warn on security notices
+yanked = "deny"            # Fail on yanked crates
+
+ignore = [
+    # Add specific advisories to ignore if needed
+    # Format: "RUSTSEC-YYYY-NNNN"
+]
+
+[sources]
+# Only allow crates from trusted sources
+unknown-registry = "deny"
+unknown-git = "deny"
+
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []
